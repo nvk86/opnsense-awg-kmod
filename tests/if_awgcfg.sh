@@ -192,27 +192,40 @@ awg_constraints_body()
 
 	# h1/h2/h3/h4
 
-	h=$(jot -r 1 5 4294967295)
+	# Official/default AWG magic headers 1/2/3/4 are valid explicit values.
+	atf_check -s exit:0 -o ignore -e ignore \
+		awg set $wg h1 1 h2 2 h3 3 h4 4
+
+	atf_check -s exit:0 -o match:'h1: 1' -e empty \
+		awg show $wg
+	atf_check -s exit:0 -o match:'h2: 2' -e empty \
+		awg show $wg
+	atf_check -s exit:0 -o match:'h3: 3' -e empty \
+		awg show $wg
+	atf_check -s exit:0 -o match:'h4: 4' -e empty \
+		awg show $wg
+
+	h=$(jot -r 1 1 4294967295)
 	atf_check -s exit:1 -o ignore -e match:"Invalid argument" \
 		awg set $wg h1 $h h2 $h
 
-	h=$(jot -r 1 5 4294967295)
+	h=$(jot -r 1 1 4294967295)
 	atf_check -s exit:1 -o ignore -e match:"Invalid argument" \
 		awg set $wg h1 $h h3 $h
 
-	h=$(jot -r 1 5 4294967295)
+	h=$(jot -r 1 1 4294967295)
 	atf_check -s exit:1 -o ignore -e match:"Invalid argument" \
 		awg set $wg h1 $h h4 $h
 
-	h=$(jot -r 1 5 4294967295)
+	h=$(jot -r 1 1 4294967295)
 	atf_check -s exit:1 -o ignore -e match:"Invalid argument" \
 		awg set $wg h1 0 h2 $h h3 $h
 
-	h=$(jot -r 1 5 4294967295)
+	h=$(jot -r 1 1 4294967295)
 	atf_check -s exit:1 -o ignore -e match:"Invalid argument" \
 		awg set $wg h1 0 h2 0 h3 $h h4 $h
 
-	h=$(jot -r 1 5 4294967295)
+	h=$(jot -r 1 1 4294967295)
 	atf_check -s exit:1 -o ignore -e match:"Invalid argument" \
 		awg set $wg h1 0 h2 $h h3 $h h4 0
 

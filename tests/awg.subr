@@ -1,6 +1,6 @@
 hp() {
 	local max32bit=4294967295
-	local h=$(jot -r 1 5 $max32bit)
+	local h=$(jot -r 1 1 $max32bit)
 	local d=$(jot -r 1 0 65365)
 	hm=$((h + d))
 	if [ $hm -gt $max32bit ]; then
@@ -82,10 +82,10 @@ awg1_config() {
 		s1=$(jot -r 1 15 1132)
 		s2=$(jot -r 1 15 1188)
 
-		h1=$(jot -r 1 5 4294967295)
-		h2=$(jot -r 1 5 4294967295)
-		h3=$(jot -r 1 5 4294967295)
-		h4=$(jot -r 1 5 4294967295)
+		h1=$(jot -r 1 1 4294967295)
+		h2=$(jot -r 1 1 4294967295)
+		h3=$(jot -r 1 1 4294967295)
+		h4=$(jot -r 1 1 4294967295)
 
 		if [ $(($s1 + 56)) -ne $s2 ] && \
 		   [ $(echo -e "$h1\n$h2\n$h3\n$h4" | sort -u | wc -l) -eq 4 ]; then

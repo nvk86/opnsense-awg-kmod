@@ -1,7 +1,7 @@
 
 hp() {
 	local max32bit=4294967295
-	local h=$(jot -r 1 5 $max32bit)
+	local h=$(jot -r 1 1 $max32bit)
 	local d=$(jot -r 1 0 65365)
 	hm=$((h + d))
 	if [ $hm -gt $max32bit ]; then

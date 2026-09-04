@@ -86,7 +86,6 @@
 #define WG_PKT_COOKIE		htole32(3)
 #define WG_PKT_DATA			htole32(4)
 
-#define WG_PKT_DEFAULT_MAX	WG_PKT_DATA
 
 #ifdef INET6
 #  define AWG_PACKET_SPACE	((ETHERMTU) - sizeof(struct ip6_hdr) - sizeof(struct udphdr))
@@ -3644,14 +3643,6 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 	for(int i = 0; i < AWG_Hx; i++) {
 		if (hparams[i].value.min == 0) {
 			continue;
-		}
-
-		// Magic headers should be greater than WG_PKT_DATA
-		if (hparams[i].value.min <= WG_PKT_DEFAULT_MAX) {
-			DPRINTF(sc, "Magic Header should be above %u: %s=%u\n",
-					WG_PKT_DEFAULT_MAX, hparams[i].name, hparams[i].value.min);
-			err = EINVAL;
-			goto out_locked;
 		}
 
 		// Magic header range should be min <= max
