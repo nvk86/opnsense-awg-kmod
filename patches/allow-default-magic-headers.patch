@@ -1,3 +1,5 @@
+diff --git a/if_wg.c b/if_wg.c
+index d72c801..2c13499 100644
 --- a/if_wg.c
 +++ b/if_wg.c
 @@ -86,7 +86,6 @@
@@ -8,7 +10,7 @@
  
  #ifdef INET6
  #  define AWG_PACKET_SPACE	((ETHERMTU) - sizeof(struct ip6_hdr) - sizeof(struct udphdr))
-@@ -3646,13 +3645,6 @@
+@@ -3646,14 +3645,6 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
  			continue;
  		}
  
@@ -19,9 +21,12 @@
 -			err = EINVAL;
 -			goto out_locked;
 -		}
- 
+-
  		// Magic header range should be min <= max
  		if (hparams[i].value.min > hparams[i].value.max) {
+ 			DPRINTF(sc, "Magic Header range should be min <= max: %s=%u-%u\n",
+diff --git a/tests/awg.subr b/tests/awg.subr
+index 36bd094..5571c24 100644
 --- a/tests/awg.subr
 +++ b/tests/awg.subr
 @@ -1,6 +1,6 @@
@@ -32,7 +37,7 @@
  	local d=$(jot -r 1 0 65365)
  	hm=$((h + d))
  	if [ $hm -gt $max32bit ]; then
-@@ -82,10 +82,10 @@
+@@ -82,10 +82,10 @@ awg1_config() {
  		s1=$(jot -r 1 15 1132)
  		s2=$(jot -r 1 15 1188)
  
@@ -47,6 +52,8 @@
  
  		if [ $(($s1 + 56)) -ne $s2 ] && \
  		   [ $(echo -e "$h1\n$h2\n$h3\n$h4" | sort -u | wc -l) -eq 4 ]; then
+diff --git a/tests/gen_cfg.sh b/tests/gen_cfg.sh
+index 9fc44f1..e4e5e3a 100755
 --- a/tests/gen_cfg.sh
 +++ b/tests/gen_cfg.sh
 @@ -1,7 +1,7 @@
@@ -58,9 +65,11 @@
  	local d=$(jot -r 1 0 65365)
  	hm=$((h + d))
  	if [ $hm -gt $max32bit ]; then
+diff --git a/tests/if_awgcfg.sh b/tests/if_awgcfg.sh
+index 27ce1ef..a3c501c 100644
 --- a/tests/if_awgcfg.sh
 +++ b/tests/if_awgcfg.sh
-@@ -192,27 +192,40 @@
+@@ -192,27 +192,40 @@ awg_constraints_body()
  
  	# h1/h2/h3/h4
  
@@ -106,3 +115,4 @@
 +	h=$(jot -r 1 1 4294967295)
  	atf_check -s exit:1 -o ignore -e match:"Invalid argument" \
  		awg set $wg h1 0 h2 $h h3 $h h4 0
+ 
