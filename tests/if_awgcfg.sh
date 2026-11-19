@@ -439,9 +439,105 @@ mtu_cleanup()
 	vnet_cleanup
 }
 
+
+#
+# Regression tests for I1-I5 packet size validation.
+#
+atf_test_case "awg_ix_bounds" "cleanup"
+awg_ix_bounds_head()
+{
+        atf_set descr 'Validate I1-I5 packet boundaries and rollback'
+        atf_set require.user root
+}
+
+awg_ix_bounds_body()
+{
+        local iface p original actual limit
+
+        iface=awg99
+
+        # Never delete an interface that existed before this test.
+        if ifconfig -l | tr ' ' '\n' | grep -qx "$iface"; then
+                atf_fail "$iface already exists"
+        fi
+
+        touch awg_ix_bounds.created ||
+                atf_fail "Cannot create interface ownership marker"
+
+        ifconfig awg create name "$iface" ||
+                atf_fail "Cannot create $iface"
+
+        # FreeBSD kernel with INET6: 1500 - 40 - 8.
+        limit=1452
+        original='<b 0xdeadbeef><c><t><r 128>'
+
+        for p in i1 i2 i3 i4 i5; do
+                echo "=== Testing $p ==="
+
+                atf_check -s exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" "<r $limit>"
+
+                atf_check -s not-exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" "<r $((limit + 1))>"
+
+                atf_check -s exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" "<r $((limit - 4))><c>"
+
+                atf_check -s not-exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" "<r $((limit - 3))><c>"
+
+                atf_check -s exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" "<r 1000><r $((limit - 1000))>"
+
+                atf_check -s not-exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" "<r 1000><r $((limit - 999))>"
+
+                atf_check -s exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" \
+                        "<b 0xdeadbeef><r $((limit - 4))>"
+
+                atf_check -s not-exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" \
+                        "<b 0xdeadbeef><r $((limit - 3))>"
+
+                atf_check -s exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" '<c><t>'
+
+                atf_check -s exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" "$original"
+
+                actual=$(awg show "$iface" "$p") ||
+                        atf_fail "Cannot read $p"
+
+                test "$actual" = "$original" ||
+                        atf_fail "$p: initial value mismatch"
+
+                atf_check -s not-exit:0 -o ignore -e ignore \
+                        awg set "$iface" "$p" "<r $((limit + 1))>"
+
+                actual=$(awg show "$iface" "$p") ||
+                        atf_fail "Cannot read $p after rejected update"
+
+                test "$actual" = "$original" ||
+                        atf_fail "$p: previous value was not preserved"
+        done
+}
+
+awg_ix_bounds_cleanup()
+{
+        # Destroy only the interface created by this test.
+        if [ -f awg_ix_bounds.created ]; then
+                if ifconfig -l | tr ' ' '\n' | grep -qx 'awg99'; then
+                        ifconfig awg99 destroy
+                fi
+                rm -f awg_ix_bounds.created
+        fi
+}
+
 atf_init_test_cases()
 {
 	atf_add_test_case "awg_configuration"
+	atf_add_test_case "awg_ix_bounds"
 	atf_add_test_case "awg_constraints"
 	atf_add_test_case "wide_range_parameters"
 	atf_add_test_case "mtu"

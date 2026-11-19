@@ -1633,7 +1633,8 @@ wg_send_junk_packets(struct wg_peer *peer)
 				size_t size;
 
 				if (wg_prepare_ix_packet(sc, i, desc, &size, buf) == 0) {
-					KASSERT(size > sizeof(buf), "wrote too much data into junk packet buffer");
+					KASSERT(size <= sizeof(buf),
+                                            ("wrote too much data into junk packet buffer"));
 					wg_peer_send_buf(peer, buf, size);
 				}
 			}
@@ -3338,7 +3339,12 @@ wg_prepare_ix_packet(struct wg_softc *sc, int iidx, const char *desc, size_t *si
 				}
 
 				s++;
-				pkt_size += (t_end - t_start) / 2;
+				size_t tag_size = (t_end - t_start) / 2;
+				if (tag_size > max_pkt_size - pkt_size) {
+				        errmsg = "packet size is too large";
+				        break;
+				}
+				pkt_size += tag_size;
 
 				if (buf) {
 					for (const char *p = t_start; p < t_end; p += 2) {
@@ -3356,6 +3362,10 @@ wg_prepare_ix_packet(struct wg_softc *sc, int iidx, const char *desc, size_t *si
 				}
 
 				s++;
+				if (sizeof(uint32_t) > max_pkt_size - pkt_size) {
+				        errmsg = "packet size is too large";
+				        break;
+				}
 				pkt_size += sizeof(uint32_t);
 				if (buf) {
 					uint32_t val = 0;
@@ -3368,7 +3378,8 @@ wg_prepare_ix_packet(struct wg_softc *sc, int iidx, const char *desc, size_t *si
 					} else if (tag == 't') {
 						val = time_second;
 					}
-					*(uint32_t *)(buf + buf_idx) = htonl(val);
+					uint32_t netval = htonl(val);
+                                       memcpy(buf + buf_idx, &netval, sizeof(netval));
 					buf_idx += sizeof(uint32_t);
 				}
 				continue;  // <c> tag ends here
@@ -3409,6 +3420,10 @@ wg_prepare_ix_packet(struct wg_softc *sc, int iidx, const char *desc, size_t *si
 				s = endptr;
 				s++; // skip '>'
 
+				if (sz > max_pkt_size - pkt_size) {
+				        errmsg = "packet size is too large";
+				        break;
+				}
 				pkt_size += sz;
 
 				if (buf) {
@@ -3439,11 +3454,6 @@ wg_prepare_ix_packet(struct wg_softc *sc, int iidx, const char *desc, size_t *si
 		if (errmsg)
 			break;
 
-		/* Check total packet size */
-		if (pkt_size > max_pkt_size) {
-			errmsg = "packet size is too large";
-			break;
-		}
 	}
 
 	if (errmsg) {
@@ -3466,7 +3476,7 @@ wg_prepare_ix_packet(struct wg_softc *sc, int iidx, const char *desc, size_t *si
 	}
 
 	if (buf) {
-		KASSERT(buf_idx != pkt_size,
+		KASSERT(buf_idx == pkt_size,
 			("%s: packet size is not equal to buffer size %zu != %zu", __func__, pkt_size, buf_idx));
 	}
 

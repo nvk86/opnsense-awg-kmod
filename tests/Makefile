@@ -6,6 +6,11 @@ ATF_TESTS_SH+=	if_awgcfg
 ATF_TESTS_SH+=	if_awg1
 ATF_TESTS_SH+=	if_awg2
 ATF_TESTS_SH+=	awg_quic
+ATF_TESTS_SH+= if_awg_ix_generation
+
+# PCAP verifier used by if_awg_ix_generation.
+FILES+=         awg_ix_pcap.py
+FILESDIR=      ${TESTSDIR}
 
 # The netmap bridge application is used by if_wg tests.
 .PATH:	/usr/src/tools/tools/netmap
