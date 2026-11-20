@@ -3099,6 +3099,96 @@ wg_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst, struct route *ro
 	return (wg_xmit(ifp, m, parsed_af, mtu));
 }
 
+/*
+ * Validate peer nvlist entries before wgc_set() modifies live state.
+ * Keep the accepted input semantics aligned with wg_peer_add().
+ * This does not reserve resources or make the commit phase infallible.
+ */
+static int
+wg_peer_validate(struct wg_softc *sc, const nvlist_t *nvl)
+{
+	uint8_t public[WG_KEY_SIZE];
+	const void *pub_key, *addr;
+	const nvlist_t * const *aipl;
+	size_t size, allowedip_count;
+	uint64_t pki, cidr;
+	awg_u16_range_t pki_range;
+	int ipflags;
+
+	sx_assert(&sc->sc_lock, SX_XLOCKED);
+
+	if (!nvlist_exists_binary(nvl, "public-key"))
+		return (EINVAL);
+	pub_key = nvlist_get_binary(nvl, "public-key", &size);
+	if (size != WG_KEY_SIZE)
+		return (EINVAL);
+
+	/* wg_peer_add() ignores peers using the interface's own key. */
+	if (noise_local_keys(sc->sc_local, public, NULL) == 0 &&
+	    bcmp(public, pub_key, WG_KEY_SIZE) == 0)
+		return (0);
+
+	/* Removal ignores all other peer attributes. */
+	if (nvlist_exists_bool(nvl, "remove") &&
+	    nvlist_get_bool(nvl, "remove"))
+		return (0);
+
+	if (nvlist_exists_binary(nvl, "endpoint")) {
+		(void)nvlist_get_binary(nvl, "endpoint", &size);
+		if (size > sizeof(((struct wg_peer *)0)->p_endpoint.e_remote))
+			return (EINVAL);
+	}
+
+	if (nvlist_exists_binary(nvl, "preshared-key")) {
+		(void)nvlist_get_binary(nvl, "preshared-key", &size);
+		if (size != WG_KEY_SIZE)
+			return (EINVAL);
+	}
+
+	if (nvlist_exists_number(nvl, "persistent-keepalive-interval")) {
+		pki = nvlist_get_number(nvl, "persistent-keepalive-interval");
+		if (pki > UINT32_MAX)
+			return (EINVAL);
+		if (pki != 0 && pki <= UINT16_MAX)
+			pki_range = (awg_u16_range_t)((uint32_t)pki |
+			    ((uint32_t)pki << 16));
+		else
+			pki_range = (awg_u16_range_t)pki;
+		if (pki_range != 0 &&
+		    awg_u16_range_hi(pki_range) < awg_u16_range_lo(pki_range))
+			return (EINVAL);
+	}
+
+	if (!nvlist_exists_nvlist_array(nvl, "allowed-ips"))
+		return (0);
+
+	aipl = nvlist_get_nvlist_array(nvl, "allowed-ips", &allowedip_count);
+	for (size_t idx = 0; idx < allowedip_count; idx++) {
+		if (!nvlist_exists_number(aipl[idx], "cidr"))
+			continue;
+
+		ipflags = 0;
+		if (nvlist_exists_number(aipl[idx], "flags"))
+			ipflags = nvlist_get_number(aipl[idx], "flags");
+		if ((ipflags & ~WGALLOWEDIP_VALID_FLAGS) != 0)
+			return (EOPNOTSUPP);
+
+		cidr = nvlist_get_number(aipl[idx], "cidr");
+		if (nvlist_exists_binary(aipl[idx], "ipv4")) {
+			addr = nvlist_get_binary(aipl[idx], "ipv4", &size);
+			if (addr == NULL || cidr > 32 ||
+			    size != sizeof(struct in_addr))
+				return (EINVAL);
+		} else if (nvlist_exists_binary(aipl[idx], "ipv6")) {
+			addr = nvlist_get_binary(aipl[idx], "ipv6", &size);
+			if (addr == NULL || cidr > 128 ||
+			    size != sizeof(struct in6_addr))
+				return (EINVAL);
+		}
+	}
+	return (0);
+}
+
 static int
 wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 {
@@ -3573,6 +3663,21 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 		goto out;
 	}
 	sx_xlock(&sc->sc_lock);
+	/*
+	 * Preflight all peer entries before replace-peers, socket changes,
+	 * or AWG parameter updates can affect the live configuration.
+	 */
+	if (nvlist_exists_nvlist_array(nvl, "peers")) {
+		size_t peercount;
+		const nvlist_t * const *nvl_peers;
+
+		nvl_peers = nvlist_get_nvlist_array(nvl, "peers", &peercount);
+		for (size_t i = 0; i < peercount; i++) {
+			err = wg_peer_validate(sc, nvl_peers[i]);
+			if (err != 0)
+				goto out_locked;
+		}
+	}
 	if (nvlist_exists_bool(nvl, "replace-peers") &&
 		nvlist_get_bool(nvl, "replace-peers"))
 		wg_peer_destroy_all(sc);
