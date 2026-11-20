@@ -3678,22 +3678,11 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 				goto out_locked;
 		}
 	}
-	if (nvlist_exists_bool(nvl, "replace-peers") &&
-		nvlist_get_bool(nvl, "replace-peers"))
-		wg_peer_destroy_all(sc);
-	if (nvlist_exists_number(nvl, "listen-port")) {
-		uint64_t new_port = nvlist_get_number(nvl, "listen-port");
-		if (new_port > UINT16_MAX) {
-			err = EINVAL;
-			goto out_locked;
-		}
-		if (new_port != sc->sc_socket.so_port) {
-			if ((if_getdrvflags(ifp) & IFF_DRV_RUNNING) != 0) {
-				if ((err = wg_socket_init(sc, new_port)) != 0)
-					goto out_locked;
-			} else
-				sc->sc_socket.so_port = new_port;
-		}
+	/* Validate the port without changing live socket state. */
+	if (nvlist_exists_number(nvl, "listen-port") &&
+	    nvlist_get_number(nvl, "listen-port") > UINT16_MAX) {
+		err = EINVAL;
+		goto out_locked;
 	}
 	new_jc = sc->sc_amnezia.am_junk_packet_count;
 	new_jmin = sc->sc_amnezia.am_junk_packet_min_size;
@@ -3963,6 +3952,28 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 	        err = EINVAL;
 	        goto out_locked;
 	}
+
+	/*
+	 * All input validation has completed. Apply socket changes before
+	 * replacing peers so a socket initialization failure preserves them.
+	 */
+	if (nvlist_exists_number(nvl, "listen-port")) {
+		uint64_t new_port = nvlist_get_number(nvl, "listen-port");
+
+		if (new_port != sc->sc_socket.so_port) {
+			if ((if_getdrvflags(ifp) & IFF_DRV_RUNNING) != 0) {
+				err = wg_socket_init(sc, new_port);
+				if (err != 0)
+					goto out_locked;
+			} else {
+				sc->sc_socket.so_port = new_port;
+			}
+		}
+	}
+
+	if (nvlist_exists_bool(nvl, "replace-peers") &&
+	    nvlist_get_bool(nvl, "replace-peers"))
+		wg_peer_destroy_all(sc);
 
 	// All AWG validation completed: apply prepared configuration.
 	if (new_mtu != 0) {
