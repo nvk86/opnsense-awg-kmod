@@ -107,9 +107,16 @@ awg_header_protection_enabled(struct awg_header_protection *hp)
 void
 awg_header_protection_set_key(struct awg_header_protection *hp, const uint8_t *key)
 {
+	uint8_t nonzero = 0;
+
+	for (size_t i = 0; i < AWG_HEADER_PROTECTION_KEY_SIZE; i++)
+		nonzero |= key[i];
+
 	rw_wlock(&hp->hp_lock);
-	memcpy(hp->hp_key, key, sizeof(hp->hp_key));
-	hp->hp_has_protection = true;
+	explicit_bzero(hp->hp_key, sizeof(hp->hp_key));
+	if (nonzero != 0)
+		memcpy(hp->hp_key, key, sizeof(hp->hp_key));
+	hp->hp_has_protection = (nonzero != 0);
 	rw_wunlock(&hp->hp_lock);
 }
 

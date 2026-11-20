@@ -3483,6 +3483,62 @@ wg_prepare_ix_packet(struct wg_softc *sc, int iidx, const char *desc, size_t *si
 	return 0;
 }
 
+/*
+ * Parse a strict decimal u32 or u32-u32 magic header range.
+ * Require exactly one terminating NUL in the nvlist binary value.
+ */
+static bool
+awg_parse_header_range(const char *value, size_t size, wg_hdr_pair *result)
+{
+	uint32_t bounds[2] = { 0, 0 };
+	size_t pos = 0;
+
+	if (value == NULL || size < 2 || value[size - 1] != '\0')
+	        return (false);
+
+	for (int part = 0; part < 2; part++) {
+	        uint32_t number = 0;
+	        size_t start = pos;
+
+	        while (pos < size - 1 &&
+	            value[pos] >= '0' && value[pos] <= '9') {
+	                uint32_t digit = value[pos] - '0';
+
+	                if (number > (UINT32_MAX - digit) / 10)
+	                        return (false);
+
+	                number = number * 10 + digit;
+	                pos++;
+	        }
+
+	        if (pos == start)
+	                return (false);
+
+	        bounds[part] = number;
+
+	        if (part == 0 && pos < size - 1 &&
+	            value[pos] == '-') {
+	                pos++;
+	                continue;
+	        }
+
+	        if (pos != size - 1)
+	                return (false);
+
+	        if (part == 0)
+	                bounds[1] = bounds[0];
+
+	        break;
+	}
+
+	if (bounds[0] > bounds[1])
+	        return (false);
+
+	result->min = bounds[0];
+	result->max = bounds[1];
+	return (true);
+}
+
 static int
 wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 {
@@ -3492,6 +3548,10 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 	nvlist_t *nvl;
 	ssize_t size;
 	int err;
+	char *new_ix[AWG_Ix] = {0};
+	bool changed_ix[AWG_Ix] = {0};
+	uint32_t new_jc, new_jmin, new_jmax;
+	const uint8_t *validated_hp_key = NULL;
 
 	ifp = sc->sc_ifp;
 	if (wgd->wgd_size == 0 || wgd->wgd_data == NULL)
@@ -3530,33 +3590,67 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 				sc->sc_socket.so_port = new_port;
 		}
 	}
+	new_jc = sc->sc_amnezia.am_junk_packet_count;
+	new_jmin = sc->sc_amnezia.am_junk_packet_min_size;
+	new_jmax = sc->sc_amnezia.am_junk_packet_max_size;
+
 	if (nvlist_exists_number(nvl, "jc")) {
-		uint32_t jc = nvlist_get_number(nvl, "jc");
-		if (jc > UINT8_MAX) {
-			DPRINTF(sc, "jc=%" PRIu32 " is too large\n", jc);
-			err = EINVAL;
-			goto out_locked;
-		}
-		sc->sc_amnezia.am_junk_packet_count = jc;
+	        uint64_t value = nvlist_get_number(nvl, "jc");
+	        if (value > UINT8_MAX) {
+	                err = EINVAL;
+	                goto out_locked;
+	        }
+	        new_jc = (uint32_t)value;
 	}
+
 	if (nvlist_exists_number(nvl, "jmin")) {
-		uint32_t jmin = nvlist_get_number(nvl, "jmin");
-		if (jmin > 1200) {
-			DPRINTF(sc, "jmin=%" PRIu32 " is too large, should be less than 1200\n", jmin);
-			err = EINVAL;
-			goto out_locked;
-		}
-		sc->sc_amnezia.am_junk_packet_min_size = jmin;
+	        uint64_t value = nvlist_get_number(nvl, "jmin");
+	        if (value > 1200) {
+	                err = EINVAL;
+	                goto out_locked;
+	        }
+	        new_jmin = (uint32_t)value;
 	}
+
 	if (nvlist_exists_number(nvl, "jmax")) {
-		uint32_t jmax = nvlist_get_number(nvl, "jmax");
-		uint32_t jmin = sc->sc_amnezia.am_junk_packet_min_size;
-		if (jmax > 1280 || (jmin && jmax <= jmin)) {
-			DPRINTF(sc, "jmax=%" PRIu32 " is too large, should be less than 1280 and greater than jmin\n", jmax);
+	        uint64_t value = nvlist_get_number(nvl, "jmax");
+	        if (value > 1280) {
+	                err = EINVAL;
+	                goto out_locked;
+	        }
+	        new_jmax = (uint32_t)value;
+	}
+
+	if (new_jmin && new_jmax <= new_jmin &&
+	    (nvlist_exists_number(nvl, "jmax") || new_jmax != 0)) {
+	        err = EINVAL;
+	        goto out_locked;
+	}
+
+	/*
+	 * Determine effective Header Protection state before validating S1-S4.
+	 * A zero key disables protection.
+	 */
+	bool hp_active =
+	    awg_header_protection_enabled(&sc->sc_amnezia.am_header_protection);
+
+	if (nvlist_exists_binary(nvl, "header-protection-key")) {
+		size_t hp_size;
+		const uint8_t *hp_key =
+		    nvlist_get_binary(nvl, "header-protection-key", &hp_size);
+		uint8_t nonzero = 0;
+
+		if (hp_key == NULL ||
+		    hp_size != AWG_HEADER_PROTECTION_KEY_SIZE) {
 			err = EINVAL;
 			goto out_locked;
 		}
-		sc->sc_amnezia.am_junk_packet_max_size = jmax;
+
+		for (size_t i = 0; i < hp_size; i++)
+			nonzero |= hp_key[i];
+
+		hp_active = (nonzero != 0);
+		validated_hp_key = hp_key;
 	}
 
 	uint32_t sx[AWG_Sx] = {0};
@@ -3568,14 +3662,6 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 		char name[3] = { 's', '1' + i, '\0' };
 		if (nvlist_exists_number(nvl, name)) {
 			uint32_t s = nvlist_get_number(nvl, name);
-			bool hp_active = awg_header_protection_enabled(&sc->sc_amnezia.am_header_protection) ||
-				nvlist_exists_binary(nvl, "header-protection-key");
-			if (hp_active && s < AWG_HEADER_PROTECTION_NONCE_SIZE) {
-				DPRINTF(sc, "%s must be at least %d while HeaderProtectionKey is enabled\n",
-					name, AWG_HEADER_PROTECTION_NONCE_SIZE);
-				err = EINVAL;
-				goto out_locked;
-			}
 			uint32_t max_size = (i == AWG_S4) ?
 						AWG_PACKET_S4_MAX_SIZE :   // small as will be placed into prepended mbuf
 						AWG_PACKET_SPACE - amnezia_structureres[i].ams_sz;
@@ -3590,22 +3676,16 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 		}
 	}
 
-	if (sx[AWG_S4]) {
-		uint32_t new_mtu = wg_check_mtu_s4(sc, if_getmtu(ifp), sx[AWG_S4], false);
-		if (new_mtu) {
-			if (new_mtu < ETHERMTU) {
-				DPRINTF(sc, "Setting MTU to %d\n", new_mtu);
-				if_setmtu(ifp, new_mtu);
-			} else {
+	if (hp_active) {
+		for (int i = 0; i < AWG_Sx; i++) {
+			if (sx[i] < AWG_HEADER_PROTECTION_NONCE_SIZE) {
+				DPRINTF(sc,
+				    "S%d must be at least %d for HeaderProtectionKey\n",
+				    i + 1, AWG_HEADER_PROTECTION_NONCE_SIZE);
 				err = EINVAL;
 				goto out_locked;
 			}
 		}
-	}
-
-	// assign Sx parameters
-	for (int i = 0; i < AWG_Sx; i++) {
-		sc->sc_amnezia.am_s[i] = sx[i];
 	}
 
 	struct {
@@ -3622,31 +3702,15 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 		if (nvlist_exists_binary(nvl, hparams[i].name)) {
 			size_t size;
 			const char *value = nvlist_get_binary(nvl, hparams[i].name, &size);
-			if (value && size > 0 && value[size - 1] == '\0') {
-				char *endptr;
-				uint32_t val_min = strtoul(value, &endptr, 10);
-				uint32_t val_max = val_min;
-
-				if (*endptr == '-') {
-					endptr++;
-					val_max = strtoul(endptr, &endptr, 10);
-				}
-
-				if (*endptr != '\0') {
-					DPRINTF(sc, "%s: %s is not a valid number or range\n", hparams[i].name, value);
-					err = EINVAL;
-					goto out_locked;
-				}
-
-				hparams[i].value.min = val_min;
-				hparams[i].value.max = val_max;
-				hparams[i].changed = true;
-		} else {
-				DPRINTF(sc, "%s: value is not a valid string\n", hparams[i].name);
-				err = EINVAL;
-				goto out_locked;
-			}
-		}
+			if (!awg_parse_header_range(value, size,
+	                        &hparams[i].value)) {
+	                        DPRINTF(sc, "%s: invalid number or range\n",
+	                                hparams[i].name);
+	                        err = EINVAL;
+	                        goto out_locked;
+	                }
+	                hparams[i].changed = true;
+	        }
 	}
 
 	// Check magic headers
@@ -3679,72 +3743,50 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 		}
 	}
 
-	// assign Hx - magic headers
-	for(int i = 0; i < AWG_Hx; i++) {
-		if (hparams[i].changed)
-			sc->sc_amnezia.am_h[i] = hparams[i].value;
-	}
-
-	// assign Ix parameters
+	// Validate and prepare Ix parameters before changing live configuration.
 	for (int i = 0; i < AWG_Ix; i++) {
 		char name[3] = { 'i', '1' + i, '\0' };
-		if (nvlist_exists_binary(nvl, name)) {
-			size_t size;
-			const char *value = nvlist_get_binary(nvl, name, &size);
-			if (value != NULL && size > 0 && value[size - 1] == '\0' && size < 2 * ETHERMTU) {
-				if (size > 1) {  // non-empty value
-					/* Validate Ix parameter format */
-					size_t pkt_size;
-					err = wg_prepare_ix_packet(sc, i, value, &pkt_size, NULL);
-					if (err || !pkt_size || pkt_size > ETHERMTU)
-						goto out_locked;
-				}
+		if (!nvlist_exists_binary(nvl, name))
+			continue;
 
-				if (sc->sc_amnezia.am_i[i]) {
-					zfree(sc->sc_amnezia.am_i[i], M_WG);
-					sc->sc_amnezia.am_i[i] = NULL;
-				}
+		size_t ix_size;
+		const char *value = nvlist_get_binary(nvl, name, &ix_size);
 
-				if (size > 1) { // non-empty value
-					sc->sc_amnezia.am_i[i] = malloc(size + 1, M_WG, M_WAITOK | M_ZERO);
-					if (sc->sc_amnezia.am_i[i] == NULL) {
-						err = ENOMEM;
-						goto out_locked;
-					}
+		if (value == NULL || ix_size == 0 ||
+		    ix_size >= 2 * ETHERMTU ||
+		    value[ix_size - 1] != '\0' ||
+		    memchr(value, '\0', ix_size - 1) != NULL) {
+			err = EINVAL;
+			goto out_locked;
+		}
 
-					strlcpy(sc->sc_amnezia.am_i[i], value, size);
-				}
-			} else {
-				DPRINTF(sc, "%s: value is not a valid string or too large\n", name);
-				err = EINVAL;
+		if (ix_size > 1) {
+			size_t pkt_size;
+			err = wg_prepare_ix_packet(sc, i, value, &pkt_size, NULL);
+			if (err || !pkt_size || pkt_size > ETHERMTU) {
+				if (!err)
+					err = EINVAL;
 				goto out_locked;
 			}
+
+			new_ix[i] = malloc(ix_size, M_WG, M_WAITOK);
+			if (new_ix[i] == NULL) {
+				err = ENOMEM;
+				goto out_locked;
+			}
+			memcpy(new_ix[i], value, ix_size);
 		}
+		changed_ix[i] = true;
 	}
 
 	/* AWG 3.1 parameters. Ranges use the same packed u32 representation as
 	 * Linux: low 16 bits=min, high 16 bits=max. */
-	if (nvlist_exists_binary(nvl, "header-protection-key")) {
-		size_t hp_size;
-		const uint8_t *hp_key = nvlist_get_binary(nvl, "header-protection-key", &hp_size);
-		if (hp_size != AWG_HEADER_PROTECTION_KEY_SIZE) {
-			err = EINVAL;
-			goto out_locked;
-		}
-		for (int i = 0; i < AWG_Sx; i++) {
-			if (sc->sc_amnezia.am_s[i] < AWG_HEADER_PROTECTION_NONCE_SIZE) {
-				DPRINTF(sc, "S%d must be at least %d for HeaderProtectionKey\n",
-					i + 1, AWG_HEADER_PROTECTION_NONCE_SIZE);
-				err = EINVAL;
-				goto out_locked;
-			}
-		}
-		awg_header_protection_set_key(&sc->sc_amnezia.am_header_protection, hp_key);
-	}
 
 	struct {
 		const char *name;
 		awg_u16_range_t *dst;
+		awg_u16_range_t value;
+		bool changed;
 	} awg3_ranges[] = {
 		{ "content-padding-addition", &sc->sc_amnezia.am_content_padding_addition },
 		{ "rekey-after-time", &sc->sc_amnezia.am_rekey_after_time },
@@ -3761,7 +3803,8 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 				err = EINVAL;
 				goto out_locked;
 			}
-			*awg3_ranges[i].dst = (uint32_t)v;
+			awg3_ranges[i].value = (uint32_t)v;
+			awg3_ranges[i].changed = true;
 		}
 	}
 
@@ -3770,21 +3813,95 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 	struct {
 		const char *name;
 		bool *dst;
+		bool value;
+		bool changed;
 	} awg3_bools[] = {
 		{ "random-trailers", &sc->sc_amnezia.am_random_trailers },
 		{ "disable-cookies", &sc->sc_amnezia.am_disable_cookies },
 	};
 	for (size_t i = 0; i < nitems(awg3_bools); i++) {
 		if (nvlist_exists_bool(nvl, awg3_bools[i].name)) {
-			*awg3_bools[i].dst = nvlist_get_bool(nvl, awg3_bools[i].name);
+			awg3_bools[i].value = nvlist_get_bool(nvl, awg3_bools[i].name);
+			awg3_bools[i].changed = true;
 		} else if (nvlist_exists_number(nvl, awg3_bools[i].name)) {
 			uint64_t v = nvlist_get_number(nvl, awg3_bools[i].name);
 			if (v > 1) {
 				err = EINVAL;
 				goto out_locked;
 			}
-			*awg3_bools[i].dst = (v != 0);
+			awg3_bools[i].value = (v != 0);
+			awg3_bools[i].changed = true;
 		}
+	}
+
+	uint32_t new_mtu = 0;
+	if (sx[AWG_S4]) {
+		new_mtu = wg_check_mtu_s4(sc, if_getmtu(ifp),
+		    sx[AWG_S4], false);
+		if (new_mtu >= ETHERMTU) {
+			err = EINVAL;
+			goto out_locked;
+		}
+	}
+
+	if (nvlist_exists_binary(nvl, "private-key")) {
+	        size_t key_size;
+	        nvlist_get_binary(nvl, "private-key", &key_size);
+	        if (key_size != WG_KEY_SIZE) {
+	                err = EINVAL;
+	                goto out_locked;
+	        }
+	}
+
+	if (nvlist_exists_number(nvl, "user-cookie") &&
+	    nvlist_get_number(nvl, "user-cookie") > UINT32_MAX) {
+	        err = EINVAL;
+	        goto out_locked;
+	}
+
+	// All AWG validation completed: apply prepared configuration.
+	if (new_mtu != 0) {
+		DPRINTF(sc, "Setting MTU to %u\n", new_mtu);
+		if_setmtu(ifp, new_mtu);
+	}
+
+	sc->sc_amnezia.am_junk_packet_count = new_jc;
+	sc->sc_amnezia.am_junk_packet_min_size = new_jmin;
+	sc->sc_amnezia.am_junk_packet_max_size = new_jmax;
+
+	// assign Sx parameters
+	for (int i = 0; i < AWG_Sx; i++) {
+		sc->sc_amnezia.am_s[i] = sx[i];
+	}
+
+	// assign Hx - magic headers
+	for(int i = 0; i < AWG_Hx; i++) {
+		if (hparams[i].changed)
+			sc->sc_amnezia.am_h[i] = hparams[i].value;
+	}
+
+	for (int i = 0; i < AWG_Ix; i++) {
+		if (!changed_ix[i])
+			continue;
+		if (sc->sc_amnezia.am_i[i] != NULL)
+			zfree(sc->sc_amnezia.am_i[i], M_WG);
+		sc->sc_amnezia.am_i[i] = new_ix[i];
+		new_ix[i] = NULL;
+	}
+
+	for (size_t i = 0; i < nitems(awg3_ranges); i++) {
+		if (awg3_ranges[i].changed)
+			*awg3_ranges[i].dst = awg3_ranges[i].value;
+	}
+	for (size_t i = 0; i < nitems(awg3_bools); i++) {
+		if (awg3_bools[i].changed)
+			*awg3_bools[i].dst = awg3_bools[i].value;
+	}
+
+	if (validated_hp_key != NULL) {
+	        awg_header_protection_set_key(
+	            &sc->sc_amnezia.am_header_protection,
+	            validated_hp_key);
 	}
 
 	if (nvlist_exists_binary(nvl, "private-key")) {
@@ -3844,6 +3961,10 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 	}
 
 out_locked:
+	for (int i = 0; i < AWG_Ix; i++) {
+		if (new_ix[i] != NULL)
+			zfree(new_ix[i], M_WG);
+	}
 	sx_xunlock(&sc->sc_lock);
 	nvlist_destroy(nvl);
 out:
