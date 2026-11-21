@@ -1286,7 +1286,9 @@ wg_timers_disable(struct wg_peer *peer)
 	 * NET_EPOCH_{ENTER,EXIT}.
 	 *
 	 * However, as new callouts may be scheduled during NET_EPOCH_WAIT (but
-	 * not after), we stop all callouts leaving no callouts active.
+	 * not after), drain all callouts. Unlike callout_stop(), callout_drain()
+	 * also waits for callbacks already running on another CPU to finish.
+	 * This must complete before the peer and its Noise remote can be freed.
 	 *
 	 * We should also pull NET_EPOCH_WAIT out of the FOREACH(peer) loops, but the
 	 * performance impact is acceptable for the time being. */
@@ -1294,11 +1296,11 @@ wg_timers_disable(struct wg_peer *peer)
 	NET_EPOCH_WAIT();
 	atomic_store_bool(&peer->p_need_another_keepalive, false);
 
-	callout_stop(&peer->p_new_handshake);
-	callout_stop(&peer->p_send_keepalive);
-	callout_stop(&peer->p_retry_handshake);
-	callout_stop(&peer->p_persistent_keepalive);
-	callout_stop(&peer->p_zero_key_material);
+	callout_drain(&peer->p_new_handshake);
+	callout_drain(&peer->p_send_keepalive);
+	callout_drain(&peer->p_retry_handshake);
+	callout_drain(&peer->p_persistent_keepalive);
+	callout_drain(&peer->p_zero_key_material);
 }
 
 static void
