@@ -4754,6 +4754,11 @@ static int
 awg_module_init(void)
 {
 	int ret;
+
+	if (!awg_header_protection_selftest()) {
+		printf("if_awg: ChaCha20 self-test failed\n");
+		return (ENOTRECOVERABLE);
+	}
 	osd_method_t methods[PR_MAXMETHOD] = {
 		[PR_METHOD_REMOVE] = wg_prison_remove,
 	};

@@ -26,6 +26,7 @@ void awg_header_protection_snapshot(
 void awg_header_protection_crypt_snapshot(
     const struct awg_hp_snapshot *, const uint8_t *, uint8_t *, size_t);
 
+bool awg_header_protection_selftest(void);
 void awg_header_protection_init(struct awg_header_protection *);
 void awg_header_protection_destroy(struct awg_header_protection *);
 bool awg_header_protection_enabled(struct awg_header_protection *);
