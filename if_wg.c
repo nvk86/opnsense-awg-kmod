@@ -4778,6 +4778,7 @@ wg_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags)
 	if_setsoftc(ifp, NULL);
 	sx_xlock(&sc->sc_lock);
 	sc->sc_flags |= WGF_DYING;
+	if_setdrvflagbits(ifp, 0, IFF_DRV_RUNNING);
 	cred = sc->sc_ucred;
 	sc->sc_ucred = NULL;
 	sx_xunlock(&sc->sc_lock);
@@ -4808,12 +4809,13 @@ wg_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags)
 	wg_peer_destroy_all(sc);
 	NET_EPOCH_DRAIN_CALLBACKS();
 	sx_xunlock(&sc->sc_lock);
-	sx_destroy(&sc->sc_lock);
+	/* Keep the softc lock alive until interface tasks have stopped. */
 	taskqgroup_detach(qgroup_wg_tqg, &sc->sc_handshake);
 	for (int i = 0; i < mp_ncpus; i++) {
 		taskqgroup_detach(qgroup_wg_tqg, &sc->sc_encrypt[i]);
 		taskqgroup_detach(qgroup_wg_tqg, &sc->sc_decrypt[i]);
 	}
+	sx_destroy(&sc->sc_lock);
 	free(sc->sc_encrypt, M_WG);
 	free(sc->sc_decrypt, M_WG);
 	wg_queue_deinit(&sc->sc_handshake_queue);
