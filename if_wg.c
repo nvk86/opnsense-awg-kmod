@@ -4807,8 +4807,9 @@ wg_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags)
 	taskqgroup_drain_all(qgroup_wg_tqg);
 	sx_xlock(&sc->sc_lock);
 	wg_peer_destroy_all(sc);
-	NET_EPOCH_DRAIN_CALLBACKS();
 	sx_xunlock(&sc->sc_lock);
+	/* Epoch callbacks can drain peer tasks; do not hold sc_lock here. */
+	NET_EPOCH_DRAIN_CALLBACKS();
 	/* Keep the softc lock alive until interface tasks have stopped. */
 	taskqgroup_detach(qgroup_wg_tqg, &sc->sc_handshake);
 	for (int i = 0; i < mp_ncpus; i++) {
