@@ -16,6 +16,16 @@ struct awg_header_protection {
 	bool hp_has_protection;
 };
 
+struct awg_hp_snapshot {
+        uint8_t key[AWG_HEADER_PROTECTION_KEY_SIZE];
+        bool enabled;
+};
+
+void awg_header_protection_snapshot(
+    struct awg_header_protection *, struct awg_hp_snapshot *);
+void awg_header_protection_crypt_snapshot(
+    const struct awg_hp_snapshot *, const uint8_t *, uint8_t *, size_t);
+
 void awg_header_protection_init(struct awg_header_protection *);
 void awg_header_protection_destroy(struct awg_header_protection *);
 bool awg_header_protection_enabled(struct awg_header_protection *);

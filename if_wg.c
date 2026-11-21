@@ -1230,6 +1230,7 @@ wg_send_buf_junk(struct wg_softc *sc, struct wg_endpoint *e, uint8_t *buf, size_
 {
 	uint8_t *junk_buf;
 	size_t total_len, trailer_len;
+	struct awg_hp_snapshot hp;
 
 	trailer_len = awg_random_trailer_len(sc, NULL, junk_len + len);
 	if (junk_len == 0 && trailer_len == 0) {
@@ -1247,14 +1248,18 @@ wg_send_buf_junk(struct wg_softc *sc, struct wg_endpoint *e, uint8_t *buf, size_
 	memcpy(junk_buf + junk_len, buf, len);
 	if (trailer_len != 0)
 		arc4random_buf(junk_buf + junk_len + len, trailer_len);
-	if (awg_header_protection_enabled(&sc->sc_amnezia.am_header_protection)) {
+	awg_header_protection_snapshot(&sc->sc_amnezia.am_header_protection, &hp);
+	if (hp.enabled) {
 		if (junk_len < AWG_HEADER_PROTECTION_NONCE_SIZE) {
+			explicit_bzero(&hp, sizeof(hp));
 			free(junk_buf, M_DEVBUF);
 			return;
 		}
-		awg_header_protection_crypt(&sc->sc_amnezia.am_header_protection,
+		awg_header_protection_crypt_snapshot(&hp,
 			junk_buf, junk_buf + junk_len, len);
 	}
+
+	explicit_bzero(&hp, sizeof(hp));
 
 	wg_send_buf(sc, e, junk_buf, total_len);
 
@@ -1559,6 +1564,7 @@ wg_peer_send_buf_junk(struct wg_peer *peer, uint8_t *buf, size_t len, size_t jun
 {
 	uint8_t *junk_buf;
 	size_t total_len, trailer_len;
+	struct awg_hp_snapshot hp;
 
 	trailer_len = awg_random_trailer_len(peer->p_sc, peer, junk_len + len);
 	if (junk_len == 0 && trailer_len == 0) {
@@ -1600,14 +1606,18 @@ wg_peer_send_buf_junk(struct wg_peer *peer, uint8_t *buf, size_t len, size_t jun
 		    + post_junk_len
 #endif
 		    , trailer_len);
-	if (awg_header_protection_enabled(&peer->p_sc->sc_amnezia.am_header_protection)) {
+	awg_header_protection_snapshot(&peer->p_sc->sc_amnezia.am_header_protection, &hp);
+	if (hp.enabled) {
 		if (junk_len < AWG_HEADER_PROTECTION_NONCE_SIZE) {
+			explicit_bzero(&hp, sizeof(hp));
 			free(junk_buf, M_DEVBUF);
 			return;
 		}
-		awg_header_protection_crypt(&peer->p_sc->sc_amnezia.am_header_protection,
+		awg_header_protection_crypt_snapshot(&hp,
 			junk_buf, junk_buf + junk_len, len);
 	}
+
+	explicit_bzero(&hp, sizeof(hp));
 
 	wg_peer_send_buf(peer, junk_buf, total_len);
 
@@ -2056,17 +2066,22 @@ wg_encrypt(struct wg_softc *sc, struct wg_packet *pkt)
 		}
 
 		arc4random_buf(mtod(m, uint8_t *), junk_size);
-		if (awg_header_protection_enabled(&sc->sc_amnezia.am_header_protection)) {
+		struct awg_hp_snapshot hp;
+		awg_header_protection_snapshot(&sc->sc_amnezia.am_header_protection, &hp);
+		if (hp.enabled) {
 			uint8_t nonce[AWG_HEADER_PROTECTION_NONCE_SIZE];
 			uint8_t hdr[sizeof(struct wg_pkt_data)];
-			if (junk_size < sizeof(nonce))
+			if (junk_size < sizeof(nonce)) {
+				explicit_bzero(&hp, sizeof(hp));
 				goto out;
+			}
 			m_copydata(m, 0, sizeof(nonce), nonce);
 			m_copydata(m, junk_size, sizeof(hdr), hdr);
-			awg_header_protection_crypt(&sc->sc_amnezia.am_header_protection, nonce, hdr, sizeof(hdr));
+			awg_header_protection_crypt_snapshot(&hp, nonce, hdr, sizeof(hdr));
 			m_copyback(m, junk_size, sizeof(hdr), hdr);
 			explicit_bzero(hdr, sizeof(hdr));
 		}
+		explicit_bzero(&hp, sizeof(hp));
 	}
 
 	wg_mbuf_reset(m);
@@ -2546,7 +2561,8 @@ wg_match_pkt_skipping_junk(
 	size_t 		junk_size,
 	uint32_t	expected,
 	wg_hdr_pair hdr,
-	size_t		header_size)
+	size_t		header_size,
+	const struct awg_hp_snapshot *hp)
 {
 	size_t req_size = junk_size + sizeof(uint32_t);
 
@@ -2577,7 +2593,7 @@ wg_match_pkt_skipping_junk(
 	 * and use it to decode the type before deciding which Sx applies. */
 	uint32_t t;
 	memcpy(&t, mtodo(*mptr, junk_size), sizeof(t));
-	if (awg_header_protection_enabled(&sc->sc_amnezia.am_header_protection)) {
+	if (hp->enabled) {
 		uint8_t nonce[AWG_HEADER_PROTECTION_NONCE_SIZE];
 		uint8_t zero[sizeof(uint32_t)] = { 0 };
 		uint8_t mask[sizeof(uint32_t)];
@@ -2585,7 +2601,7 @@ wg_match_pkt_skipping_junk(
 			return 0;
 		m_copydata(*mptr, 0, sizeof(nonce), nonce);
 		memcpy(mask, zero, sizeof(mask));
-		awg_header_protection_crypt(&sc->sc_amnezia.am_header_protection, nonce, mask, sizeof(mask));
+		awg_header_protection_crypt_snapshot(hp, nonce, mask, sizeof(mask));
 		for (size_t j = 0; j < sizeof(mask); j++)
 			((uint8_t *)&t)[j] ^= mask[j];
 	}
@@ -2604,10 +2620,10 @@ wg_match_pkt_skipping_junk(
 	 * complete protected wire header/message in-place. */
 	if (junk_size > 0) {
 		uint8_t nonce[AWG_HEADER_PROTECTION_NONCE_SIZE];
-		if (awg_header_protection_enabled(&sc->sc_amnezia.am_header_protection))
+		if (hp->enabled)
 			m_copydata(*mptr, 0, sizeof(nonce), nonce);
 		m_adj(*mptr, junk_size);
-		if (awg_header_protection_enabled(&sc->sc_amnezia.am_header_protection)) {
+		if (hp->enabled) {
 			size_t crypt_len = (expected == WG_PKT_DATA) ? sizeof(struct wg_pkt_data) : header_size;
 			uint8_t *tmp;
 			if (crypt_len == 0 || (*mptr)->m_pkthdr.len < crypt_len)
@@ -2616,7 +2632,7 @@ wg_match_pkt_skipping_junk(
 			if (tmp == NULL)
 				return 0;
 			m_copydata(*mptr, 0, crypt_len, tmp);
-			awg_header_protection_crypt(&sc->sc_amnezia.am_header_protection, nonce, tmp, crypt_len);
+			awg_header_protection_crypt_snapshot(hp, nonce, tmp, crypt_len);
 			m_copyback(*mptr, 0, crypt_len, tmp);
 			explicit_bzero(tmp, crypt_len);
 			free(tmp, M_DEVBUF);
@@ -2631,6 +2647,9 @@ static uint32_t
 wg_match_input_skipping_junk(struct mbuf **mptr, struct wg_softc *sc)
 {
 	uint32_t matched = 0;
+	struct awg_hp_snapshot hp;
+
+	awg_header_protection_snapshot(&sc->sc_amnezia.am_header_protection, &hp);
 
 	for (size_t i = 0; *mptr && !matched && i < AWG_Hx; i++) {
 		matched = wg_match_pkt_skipping_junk(
@@ -2640,13 +2659,14 @@ wg_match_input_skipping_junk(struct mbuf **mptr, struct wg_softc *sc)
 			amnezia_structureres[i].ams_type,
 			sc->sc_amnezia.am_h[i],
 #ifndef AWG2_JUNK_AFTER_HANDSHAKE
-			i != AWG_S4 ? amnezia_structureres[i].ams_sz : 0
+			i != AWG_S4 ? amnezia_structureres[i].ams_sz : 0,
 #else
-			0
+			0,
 #endif
-		);
+			&hp);
 	}
 
+	explicit_bzero(&hp, sizeof(hp));
 	return matched;
 }
 

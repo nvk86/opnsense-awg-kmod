@@ -77,6 +77,27 @@ awg_chacha20_xor(const uint8_t key[32], const uint8_t nonce[12],
 }
 
 void
+awg_header_protection_snapshot(struct awg_header_protection *hp,
+    struct awg_hp_snapshot *snapshot)
+{
+        rw_rlock(&hp->hp_lock);
+        snapshot->enabled = hp->hp_has_protection;
+        memcpy(snapshot->key, hp->hp_key, sizeof(snapshot->key));
+        rw_runlock(&hp->hp_lock);
+}
+
+void
+awg_header_protection_crypt_snapshot(const struct awg_hp_snapshot *snapshot,
+    const uint8_t nonce[AWG_HEADER_PROTECTION_NONCE_SIZE],
+    uint8_t *buf, size_t len)
+{
+        if (!snapshot->enabled)
+                return;
+
+        awg_chacha20_xor(snapshot->key, nonce, buf, len);
+}
+
+void
 awg_header_protection_init(struct awg_header_protection *hp)
 {
 	rw_init(&hp->hp_lock, "awg header protection");
