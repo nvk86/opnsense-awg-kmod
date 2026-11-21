@@ -383,7 +383,7 @@ struct wg_softc {
 		BPF_MTAP2(ifp, &__bpf_tap_af, sizeof(__bpf_tap_af), m); \
 	} while (0)
 
-static int clone_count;
+static u_int clone_count;
 static uma_zone_t wg_packet_zone;
 static volatile unsigned long peer_counter = 0;
 static const char wgname[] = "awg";
@@ -1192,7 +1192,7 @@ retry:
 		ret = ENOMEM;
 		goto out;
 	}
-	m_copyback(m, 0, len, buf);
+	m_copyback(m, 0, len, (const char *)buf);
 
 	if (ret == 0) {
 		ret = wg_send(sc, e, m);
@@ -2035,7 +2035,7 @@ wg_encrypt(struct wg_softc *sc, struct wg_packet *pkt)
 		unsigned int left = padlen;
 		while (left != 0) {
 			unsigned int n = min(left, (unsigned int)sizeof(zeros));
-			if (!m_append(m, n, zeros))
+			if (!m_append(m, n, (const char *)zeros))
 				goto out;
 			left -= n;
 		}
@@ -2076,10 +2076,10 @@ wg_encrypt(struct wg_softc *sc, struct wg_packet *pkt)
 				explicit_bzero(&hp, sizeof(hp));
 				goto out;
 			}
-			m_copydata(m, 0, sizeof(nonce), nonce);
-			m_copydata(m, junk_size, sizeof(hdr), hdr);
+			m_copydata(m, 0, sizeof(nonce), (char *)nonce);
+			m_copydata(m, junk_size, sizeof(hdr), (char *)hdr);
 			awg_header_protection_crypt_snapshot(&hp, nonce, hdr, sizeof(hdr));
-			m_copyback(m, junk_size, sizeof(hdr), hdr);
+			m_copyback(m, junk_size, sizeof(hdr), (const char *)hdr);
 			explicit_bzero(hdr, sizeof(hdr));
 		}
 		explicit_bzero(&hp, sizeof(hp));
@@ -2102,7 +2102,7 @@ awg_mbuf_all_zero(const struct mbuf *m)
 
 	while (off < len) {
 		size_t n = min(sizeof(buf), len - off);
-		m_copydata(m, (int)off, (int)n, buf);
+		m_copydata(m, (int)off, (int)n, (char *)buf);
 		for (size_t i = 0; i < n; i++) {
 			if (buf[i] != 0)
 				return (false);
@@ -2600,7 +2600,7 @@ wg_match_pkt_skipping_junk(
 		uint8_t mask[sizeof(uint32_t)];
 		if (junk_size < sizeof(nonce))
 			return 0;
-		m_copydata(*mptr, 0, sizeof(nonce), nonce);
+		m_copydata(*mptr, 0, sizeof(nonce), (char *)nonce);
 		memcpy(mask, zero, sizeof(mask));
 		awg_header_protection_crypt_snapshot(hp, nonce, mask, sizeof(mask));
 		for (size_t j = 0; j < sizeof(mask); j++)
@@ -2622,7 +2622,7 @@ wg_match_pkt_skipping_junk(
 	if (junk_size > 0) {
 		uint8_t nonce[AWG_HEADER_PROTECTION_NONCE_SIZE];
 		if (hp->enabled)
-			m_copydata(*mptr, 0, sizeof(nonce), nonce);
+			m_copydata(*mptr, 0, sizeof(nonce), (char *)nonce);
 		m_adj(*mptr, junk_size);
 		if (hp->enabled) {
 			size_t crypt_len = (expected == WG_PKT_DATA) ? sizeof(struct wg_pkt_data) : header_size;
@@ -2632,9 +2632,9 @@ wg_match_pkt_skipping_junk(
 			tmp = malloc(crypt_len, M_DEVBUF, M_NOWAIT);
 			if (tmp == NULL)
 				return 0;
-			m_copydata(*mptr, 0, crypt_len, tmp);
+			m_copydata(*mptr, 0, crypt_len, (char *)tmp);
 			awg_header_protection_crypt_snapshot(hp, nonce, tmp, crypt_len);
-			m_copyback(*mptr, 0, crypt_len, tmp);
+			m_copyback(*mptr, 0, crypt_len, (const char *)tmp);
 			explicit_bzero(tmp, crypt_len);
 			free(tmp, M_DEVBUF);
 		}
@@ -3849,7 +3849,7 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 	if_t ifp;
 	void *nvlpacked;
 	nvlist_t *nvl;
-	ssize_t size;
+	size_t size;
 	int err;
 	char *new_ix[AWG_Ix] = {0};
 	bool changed_ix[AWG_Ix] = {0};

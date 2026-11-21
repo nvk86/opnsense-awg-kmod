@@ -273,7 +273,7 @@ precompute_key(uint8_t *key, const uint8_t input[COOKIE_INPUT_SIZE],
 {
 	struct blake2s_state blake;
 	blake2s_init(&blake, COOKIE_KEY_SIZE);
-	blake2s_update(&blake, label, strlen(label));
+	blake2s_update(&blake, (const uint8_t *)label, strlen(label));
 	blake2s_update(&blake, input, COOKIE_INPUT_SIZE);
 	blake2s_final(&blake, key);
 }
