@@ -214,6 +214,7 @@ struct wg_packet {
 	struct noise_keypair	*p_keypair;
 	uint64_t		 p_nonce;
 	struct mbuf		*p_mbuf;
+	bool			 p_has_data;
 	int			 p_mtu;
 	sa_family_t		 p_af;
 	enum wg_ring_state {
@@ -1998,6 +1999,7 @@ wg_encrypt(struct wg_softc *sc, struct wg_packet *pkt)
 	remote = noise_keypair_remote(pkt->p_keypair);
 	peer = noise_remote_arg(remote);
 	m = pkt->p_mbuf;
+	pkt->p_has_data = (m->m_pkthdr.len != 0);
 
 	/* Linux AWG3 tracks the largest required UDP payload before choosing
 	 * ContentPaddingAddition or RandomTrailers. CPA has precedence. */
@@ -2238,8 +2240,7 @@ wg_deliver_out(struct wg_peer *peer)
 		wg_timers_event_any_authenticated_packet_sent(peer);
 		rc = wg_send(sc, &endpoint, m);
 		if (rc == 0) {
-			if (len > (sizeof(struct wg_pkt_data) + NOISE_AUTHTAG_LEN
-					   + sc->sc_amnezia.am_s[AWG_S4]))
+			if (pkt->p_has_data)
 				wg_timers_event_data_sent(peer);
 			counter_u64_add(peer->p_tx_bytes, len);
 		} else if (rc == EADDRNOTAVAIL) {
