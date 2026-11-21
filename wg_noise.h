@@ -9,6 +9,8 @@
 
 #include "crypto.h"
 
+#define NOISE_MAX_REMOTE_PER_LOCAL (1U << 20)
+
 #define NOISE_PUBLIC_KEY_LEN	CURVE25519_KEY_SIZE
 #define NOISE_SYMMETRIC_KEY_LEN	CHACHA20POLY1305_KEY_SIZE
 #define NOISE_TIMESTAMP_LEN	(sizeof(uint64_t) + sizeof(uint32_t))

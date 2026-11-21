@@ -24,6 +24,8 @@ def simulate(
     limit=MAX_REMOTE_PER_LOCAL,
     replace_peers=False,
     new_self_key=None,
+    current_self_key=None,
+    private_key_changed=False,
 ):
     """
     Reproduce peer membership transitions in ioctl order.
@@ -38,15 +40,19 @@ def simulate(
     if len(peers) > limit:
         raise ValueError("Invalid initial peer count")
 
-    # A new local identity removes a conflicting existing peer.
-    if new_self_key is not None:
-        peers.discard(new_self_key)
+    # A changed identity removes the conflicting existing peer.
+    if private_key_changed:
+        if new_self_key is not None:
+            peers.discard(new_self_key)
+        effective_self_key = new_self_key
+    else:
+        effective_self_key = current_self_key
 
     peak = len(peers)
 
     for op in operations:
-        # wg_peer_add() ignores the interface's own public key.
-        if new_self_key is not None and op.key == new_self_key:
+        # wg_peer_add() ignores the effective local public key.
+        if effective_self_key is not None and op.key == effective_self_key:
             continue
 
         if op.remove:
@@ -145,6 +151,7 @@ def main():
         existing={"A", "B"},
         operations=[Op("C")],
         new_self_key="B",
+        private_key_changed=True,
         limit=2,
     )
 
@@ -154,6 +161,7 @@ def main():
         existing={"A"},
         operations=[Op("B"), Op("B", True)],
         new_self_key="B",
+        private_key_changed=True,
         limit=1,
     )
 
@@ -163,6 +171,7 @@ def main():
         existing={"A"},
         operations=[Op("B", True), Op("B")],
         new_self_key="B",
+        private_key_changed=True,
         limit=1,
     )
 
@@ -180,6 +189,35 @@ def main():
     )
 
     check(
+        "unchanged self key ignored",
+        (None, {"A"}, 1),
+        existing={"A"},
+        operations=[Op("B")],
+        current_self_key="B",
+        limit=1,
+    )
+
+    check(
+        "unchanged self key removal ignored",
+        (None, {"A"}, 1),
+        existing={"A"},
+        operations=[Op("B", True)],
+        current_self_key="B",
+        limit=1,
+    )
+
+    check(
+        "identity change permits former self key",
+        (None, {"A", "B"}, 2),
+        existing={"A"},
+        operations=[Op("B")],
+        current_self_key="B",
+        new_self_key="C",
+        private_key_changed=True,
+        limit=2,
+    )
+
+    check(
         "actual kernel limit boundary",
         (None, {"A"}, 1),
         existing=set(),
@@ -188,7 +226,7 @@ def main():
     )
 
     assert MAX_REMOTE_PER_LOCAL == 1048576
-    print("\nALL 13 PEER CAPACITY MODEL TESTS PASSED")
+    print("\nALL 16 PEER CAPACITY MODEL TESTS PASSED")
 
 
 if __name__ == "__main__":

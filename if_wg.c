@@ -32,6 +32,7 @@
 #include <sys/sockio.h>
 #include <sys/sysctl.h>
 #include <sys/sx.h>
+#include <crypto/siphash/siphash.h>
 #include <machine/_inttypes.h>
 #include <net/bpf.h>
 #include <net/ethernet.h>
@@ -3120,6 +3121,203 @@ wg_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst, struct route *ro
 	return (wg_xmit(ifp, m, parsed_af, mtu));
 }
 
+/* Shared with noise_remote_enable() via wg_noise.h. */
+#define WG_CAPACITY_MAX_REMOTE NOISE_MAX_REMOTE_PER_LOCAL
+
+struct wg_capacity_entry {
+    uint8_t public_key[WG_KEY_SIZE];
+    bool occupied;
+    bool present;
+};
+
+static uint64_t
+wg_capacity_hash(const uint8_t key[SIPHASH_KEY_LENGTH],
+    const void *data, size_t len)
+{
+    SIPHASH_CTX ctx;
+
+    return (SipHashX(&ctx, 2, 4, key, data, len));
+}
+
+/*
+ * Predict peer membership transitions in ioctl order.
+ *
+ * The temporary hash table contains only keys mentioned in the
+ * request. Initial membership is obtained from Noise once per key.
+ *
+ * This check does not reserve resources and does not make the
+ * subsequent configuration application atomic.
+ */
+static int
+wg_peer_capacity_validate(struct wg_softc *sc, const nvlist_t *nvl)
+{
+    const nvlist_t * const *peers;
+    struct wg_capacity_entry *entries = NULL, *entry;
+    struct noise_remote *remote;
+    const void *key;
+    uint8_t current_public[WG_KEY_SIZE];
+    uint8_t current_private[WG_KEY_SIZE];
+    uint8_t effective_public[WG_KEY_SIZE];
+    uint8_t new_public[WG_KEY_SIZE];
+    uint8_t hash_key[16];
+    size_t count, size, capacity, mask, slot;
+    uint64_t used;
+    bool replace, changed, has_identity, effective_identity;
+    bool remove;
+    int err = 0;
+
+    sx_assert(&sc->sc_lock, SX_XLOCKED);
+
+    if (!nvlist_exists_nvlist_array(nvl, "peers"))
+	return (0);
+
+    peers = nvlist_get_nvlist_array(nvl, "peers", &count);
+
+    replace = nvlist_exists_bool(nvl, "replace-peers") &&
+	nvlist_get_bool(nvl, "replace-peers");
+
+    used = replace ? 0 : sc->sc_peers_num;
+
+    has_identity = noise_local_keys(sc->sc_local,
+	current_public, current_private) == 0;
+
+    effective_identity = has_identity;
+    if (has_identity)
+	memcpy(effective_public, current_public, WG_KEY_SIZE);
+
+    changed = false;
+
+    if (nvlist_exists_binary(nvl, "private-key")) {
+	key = nvlist_get_binary(nvl, "private-key", &size);
+	if (size != WG_KEY_SIZE)
+	    return (EINVAL);
+
+	changed = !has_identity ||
+	    timingsafe_bcmp(current_private, key, WG_KEY_SIZE) != 0;
+
+	if (changed) {
+	    effective_identity = curve25519_generate_public(
+		new_public, key);
+
+	    if (effective_identity)
+		memcpy(effective_public, new_public, WG_KEY_SIZE);
+
+	    if (!replace && effective_identity) {
+		remote = noise_remote_lookup(sc->sc_local,
+		    effective_public);
+
+		if (remote != NULL) {
+		    if (used == 0) {
+			noise_remote_put(remote);
+			return (EINVAL);
+		    }
+
+		    used--;
+		    noise_remote_put(remote);
+		}
+	    }
+	}
+    }
+
+    if (count == 0)
+	return (0);
+
+    /*
+     * Use a power-of-two table with load factor <= 0.5.
+     * Reject arithmetic overflow before allocating memory.
+     */
+    if (count > SIZE_MAX / 2)
+	return (E2BIG);
+
+    capacity = 1;
+    while (capacity < count * 2) {
+	if (capacity > SIZE_MAX / 2)
+	    return (E2BIG);
+	capacity <<= 1;
+    }
+
+    if (capacity > SIZE_MAX / sizeof(*entries))
+	return (E2BIG);
+
+    entries = mallocarray(capacity, sizeof(*entries),
+	M_TEMP, M_NOWAIT | M_ZERO);
+
+    if (entries == NULL)
+	return (ENOMEM);
+
+    arc4random_buf(hash_key, sizeof(hash_key));
+    mask = capacity - 1;
+
+    for (size_t i = 0; i < count; i++) {
+	key = nvlist_get_binary(peers[i], "public-key", &size);
+	if (size != WG_KEY_SIZE) {
+	    err = EINVAL;
+	    goto out;
+	}
+
+	/*
+	 * wg_peer_add() ignores the effective local public key,
+	 * including remove requests for that key.
+	 */
+	if (effective_identity &&
+	    memcmp(key, effective_public, WG_KEY_SIZE) == 0)
+	    continue;
+
+	remove = nvlist_exists_bool(peers[i], "remove") &&
+	    nvlist_get_bool(peers[i], "remove");
+
+	slot = wg_capacity_hash(hash_key, key, WG_KEY_SIZE) & mask;
+
+	while (entries[slot].occupied &&
+	    memcmp(entries[slot].public_key, key,
+		WG_KEY_SIZE) != 0)
+	    slot = (slot + 1) & mask;
+
+	entry = &entries[slot];
+
+	if (!entry->occupied) {
+	    entry->occupied = true;
+	    memcpy(entry->public_key, key, WG_KEY_SIZE);
+	    entry->present = false;
+
+	    if (!replace) {
+		remote = noise_remote_lookup(sc->sc_local,
+		    key);
+
+		if (remote != NULL) {
+		    entry->present = true;
+		    noise_remote_put(remote);
+		}
+	    }
+	}
+
+	if (remove) {
+	    if (entry->present) {
+		if (used == 0) {
+		    err = EINVAL;
+		    goto out;
+		}
+
+		entry->present = false;
+		used--;
+	    }
+	} else if (!entry->present) {
+	    if (used >= WG_CAPACITY_MAX_REMOTE) {
+		err = ENOSPC;
+		goto out;
+	    }
+
+	    entry->present = true;
+	    used++;
+	}
+    }
+
+out:
+    explicit_bzero(hash_key, sizeof(hash_key));
+    free(entries, M_TEMP);
+    return (err);
+}
+
 /*
  * Validate peer nvlist entries before wgc_set() modifies live state.
  * Keep the accepted input semantics aligned with wg_peer_add().
@@ -3967,6 +4165,13 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 	        err = EINVAL;
 	        goto out_locked;
 	}
+
+	/*
+	 * Reject peer-capacity overflow before modifying live state.
+	 */
+	err = wg_peer_capacity_validate(sc, nvl);
+	if (err != 0)
+		goto out_locked;
 
 	/*
 	 * All input validation has completed. Apply socket changes before

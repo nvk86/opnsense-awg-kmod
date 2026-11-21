@@ -50,7 +50,6 @@
 #define HT_INDEX_MASK		(HT_INDEX_SIZE - 1)
 #define HT_REMOTE_SIZE		(1 << 11)
 #define HT_REMOTE_MASK		(HT_REMOTE_SIZE - 1)
-#define MAX_REMOTE_PER_LOCAL	(1 << 20)
 
 struct noise_index {
 	CK_LIST_ENTRY(noise_index)	 i_entry;
@@ -328,7 +327,7 @@ noise_remote_enable(struct noise_remote *r)
 
 	mtx_lock(&l->l_remote_mtx);
 	if (!r->r_entry_inserted) {
-		if (l->l_remote_num < MAX_REMOTE_PER_LOCAL) {
+		if (l->l_remote_num < NOISE_MAX_REMOTE_PER_LOCAL) {
 			r->r_entry_inserted = true;
 			l->l_remote_num++;
 			CK_LIST_INSERT_HEAD(&l->l_remote_hash[idx], r, r_entry);
