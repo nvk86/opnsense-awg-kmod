@@ -2142,11 +2142,9 @@ wg_decrypt(struct wg_softc *sc, struct wg_packet *pkt)
 	peer = noise_remote_arg(remote);
 	m = pkt->p_mbuf;
 
-	/* Match Linux AWG3 UDP-window learning from authenticated transport
-	 * payload size. At this point S4 has already been removed by input. */
+	/* Remember the original transport size (including the data header).
+	 * Do not let unauthenticated packets modify the peer's UDP window. */
 	uint32_t udp_window = m->m_pkthdr.len + sc->sc_amnezia.am_s[AWG_S4];
-	if (atomic_load_32(&peer->p_udp_window) < udp_window)
-		atomic_store_32(&peer->p_udp_window, udp_window);
 
 	/* Read nonce and then adjust to remove the header. */
 	pkt->p_nonce = le64toh(mtod(m, struct wg_pkt_data *)->nonce);
@@ -2156,6 +2154,10 @@ wg_decrypt(struct wg_softc *sc, struct wg_packet *pkt)
 		!awg_u16_range_is_zero(sc->sc_amnezia.am_reject_after_time) ?
 		awg_u16_range_pick(sc->sc_amnezia.am_reject_after_time) : REJECT_AFTER_TIME) != 0)
 		goto out;
+
+	/* Only authenticated transport packets may grow the peer UDP window. */
+	if (atomic_load_32(&peer->p_udp_window) < udp_window)
+		atomic_store_32(&peer->p_udp_window, udp_window);
 
 	/* Linux AWG3 treats an empty plaintext or all-zero content padding as
 	 * a keepalive. This is required for CPA/RandomTrailers on keepalives. */
