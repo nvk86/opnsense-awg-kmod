@@ -3128,8 +3128,7 @@ wg_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst, struct route *ro
 static int
 wg_peer_validate(struct wg_softc *sc, const nvlist_t *nvl)
 {
-	uint8_t public[WG_KEY_SIZE];
-	const void *pub_key, *addr;
+	const void *addr;
 	const nvlist_t * const *aipl;
 	size_t size, allowedip_count;
 	uint64_t pki, cidr;
@@ -3140,14 +3139,9 @@ wg_peer_validate(struct wg_softc *sc, const nvlist_t *nvl)
 
 	if (!nvlist_exists_binary(nvl, "public-key"))
 		return (EINVAL);
-	pub_key = nvlist_get_binary(nvl, "public-key", &size);
+	(void)nvlist_get_binary(nvl, "public-key", &size);
 	if (size != WG_KEY_SIZE)
 		return (EINVAL);
-
-	/* wg_peer_add() ignores peers using the interface's own key. */
-	if (noise_local_keys(sc->sc_local, public, NULL) == 0 &&
-	    bcmp(public, pub_key, WG_KEY_SIZE) == 0)
-		return (0);
 
 	/* Removal ignores all other peer attributes. */
 	if (nvlist_exists_bool(nvl, "remove") &&
