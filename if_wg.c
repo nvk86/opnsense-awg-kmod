@@ -4832,6 +4832,14 @@ wg_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags)
 	while (sc->sc_peer_cleanup_pending != 0)
 		cv_wait(&sc->sc_peer_cleanup_cv, &sc->sc_peer_cleanup_mtx);
 	mtx_unlock(&sc->sc_peer_cleanup_mtx);
+
+	/*
+	 * The peer cleanup counter reaches zero before the enclosing
+	 * noise_remote_smr_free() callback returns. Drain callbacks
+	 * again before destroying interface-owned resources.
+	 */
+	NET_EPOCH_DRAIN_CALLBACKS();
+
 	/* Keep the softc lock alive until interface tasks have stopped. */
 	taskqgroup_detach(qgroup_wg_tqg, &sc->sc_handshake);
 	for (int i = 0; i < mp_ncpus; i++) {
@@ -5022,7 +5030,14 @@ awg_module_deinit(void)
 		}
 	}
 	VNET_LIST_RUNLOCK();
-	NET_EPOCH_WAIT();
+	/*
+	 * Cloner detach synchronously destroys all interfaces.
+	 * Drain nested Noise callbacks until all have completed.
+	 */
+	do {
+		NET_EPOCH_DRAIN_CALLBACKS();
+	} while (noise_callbacks_pending() != 0);
+	NET_EPOCH_DRAIN_CALLBACKS();
 	MPASS(LIST_EMPTY(&wg_list));
 	if (wg_osd_jail_slot != 0)
 		osd_jail_deregister(wg_osd_jail_slot);

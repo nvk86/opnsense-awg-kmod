@@ -136,6 +136,14 @@ struct noise_local {
 	CK_LIST_HEAD(,noise_index)	 l_index_hash[HT_INDEX_SIZE];
 };
 
+static volatile u_int noise_pending_callbacks;
+
+u_int
+noise_callbacks_pending(void)
+{
+	return (atomic_load_acq_int(&noise_pending_callbacks));
+}
+
 static void	noise_precompute_ss(struct noise_local *, struct noise_remote *);
 
 static void	noise_remote_index_insert(struct noise_local *, struct noise_remote *);
@@ -473,13 +481,16 @@ noise_remote_smr_free(struct epoch_context *smr)
 	rw_destroy(&r->r_handshake_lock);
 	mtx_destroy(&r->r_keypair_mtx);
 	zfree(r, M_NOISE);
+	atomic_subtract_int(&noise_pending_callbacks, 1);
 }
 
 void
 noise_remote_put(struct noise_remote *r)
 {
-	if (refcount_release(&r->r_refcnt))
+	if (refcount_release(&r->r_refcnt)) {
+		atomic_add_int(&noise_pending_callbacks, 1);
 		NET_EPOCH_CALL(noise_remote_smr_free, &r->r_smr);
+	}
 }
 
 void
@@ -754,13 +765,16 @@ noise_keypair_smr_free(struct epoch_context *smr)
 	noise_remote_put(kp->kp_remote);
 	rw_destroy(&kp->kp_nonce_lock);
 	zfree(kp, M_NOISE);
+	atomic_subtract_int(&noise_pending_callbacks, 1);
 }
 
 void
 noise_keypair_put(struct noise_keypair *kp)
 {
-	if (refcount_release(&kp->kp_refcnt))
+	if (refcount_release(&kp->kp_refcnt)) {
+		atomic_add_int(&noise_pending_callbacks, 1);
 		NET_EPOCH_CALL(noise_keypair_smr_free, &kp->kp_smr);
+	}
 }
 
 static void
