@@ -14,6 +14,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/counter.h>
+#include <sys/condvar.h>
 #include <sys/ctype.h>
 #include <sys/gtaskqueue.h>
 #include <sys/jail.h>
@@ -368,6 +369,9 @@ struct wg_softc {
 	u_int			 sc_decrypt_last_cpu;
 
 	struct sx		 sc_lock;
+	struct mtx		 sc_peer_cleanup_mtx;
+	struct cv		 sc_peer_cleanup_cv;
+	u_int			 sc_peer_cleanup_pending;
 };
 
 #define	WGF_DYING	0x0001
@@ -578,6 +582,10 @@ wg_peer_create(struct wg_softc *sc, const uint8_t pub_key[WG_KEY_SIZE],
 	LIST_INIT(&peer->p_aips);
 	peer->p_aips_num = 0;
 
+	/* Count peer objects until their deferred cleanup has completed. */
+	mtx_lock(&sc->sc_peer_cleanup_mtx);
+	sc->sc_peer_cleanup_pending++;
+	mtx_unlock(&sc->sc_peer_cleanup_mtx);
 	TAILQ_INSERT_TAIL(&sc->sc_peers, peer, p_entry);
 	sc->sc_peers_num++;
 
@@ -596,6 +604,7 @@ static void
 wg_peer_free_deferred(struct noise_remote *r)
 {
 	struct wg_peer *peer = noise_remote_arg(r);
+	struct wg_softc *sc = peer->p_sc;
 
 	/* While there are no references remaining, we may still have
 	 * p_{send,recv} executing (think empty queue, but wg_deliver_{in,out}
@@ -617,6 +626,12 @@ wg_peer_free_deferred(struct noise_remote *r)
 	cookie_maker_free(&peer->p_cookie);
 
 	free(peer, M_WG);
+	/* Last access to sc by this peer cleanup: wake clone teardown. */
+	mtx_lock(&sc->sc_peer_cleanup_mtx);
+	KASSERT(sc->sc_peer_cleanup_pending > 0, ("AWG peer cleanup underflow"));
+	if (--sc->sc_peer_cleanup_pending == 0)
+		cv_broadcast(&sc->sc_peer_cleanup_cv);
+	mtx_unlock(&sc->sc_peer_cleanup_mtx);
 }
 
 static void
@@ -4707,6 +4722,8 @@ wg_clone_create(struct if_clone *ifc, char *name, size_t len,
 	wg_queue_init(&sc->sc_decrypt_parallel, "decp");
 
 	sx_init(&sc->sc_lock, "awg softc lock");
+	mtx_init(&sc->sc_peer_cleanup_mtx, "awg peer cleanup", NULL, MTX_DEF);
+	cv_init(&sc->sc_peer_cleanup_cv, "awg peer cleanup");
 
 	if_setsoftc(ifp, sc);
 	if_setcapabilities(ifp, WG_CAPS);
@@ -4810,6 +4827,11 @@ wg_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags)
 	sx_xunlock(&sc->sc_lock);
 	/* Epoch callbacks can drain peer tasks; do not hold sc_lock here. */
 	NET_EPOCH_DRAIN_CALLBACKS();
+	/* Wait for nested keypair -> remote epoch callbacks as well. */
+	mtx_lock(&sc->sc_peer_cleanup_mtx);
+	while (sc->sc_peer_cleanup_pending != 0)
+		cv_wait(&sc->sc_peer_cleanup_cv, &sc->sc_peer_cleanup_mtx);
+	mtx_unlock(&sc->sc_peer_cleanup_mtx);
 	/* Keep the softc lock alive until interface tasks have stopped. */
 	taskqgroup_detach(qgroup_wg_tqg, &sc->sc_handshake);
 	for (int i = 0; i < mp_ncpus; i++) {
@@ -4817,6 +4839,8 @@ wg_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags)
 		taskqgroup_detach(qgroup_wg_tqg, &sc->sc_decrypt[i]);
 	}
 	sx_destroy(&sc->sc_lock);
+	cv_destroy(&sc->sc_peer_cleanup_cv);
+	mtx_destroy(&sc->sc_peer_cleanup_mtx);
 	free(sc->sc_encrypt, M_WG);
 	free(sc->sc_decrypt, M_WG);
 	wg_queue_deinit(&sc->sc_handshake_queue);
