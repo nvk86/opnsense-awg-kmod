@@ -3492,40 +3492,6 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 			goto out;
 		need_cleanup = true;
 	}
-	if (nvlist_exists_binary(nvl, "endpoint")) {
-		endpoint = nvlist_get_binary(nvl, "endpoint", &size);
-		if (size > sizeof(peer->p_endpoint.e_remote)) {
-			err = EINVAL;
-			goto out;
-		}
-		memcpy(&peer->p_endpoint.e_remote, endpoint, size);
-	}
-	if (nvlist_exists_binary(nvl, "preshared-key")) {
-		preshared_key = nvlist_get_binary(nvl, "preshared-key", &size);
-		if (size != WG_KEY_SIZE) {
-			err = EINVAL;
-			goto out;
-		}
-		noise_remote_set_psk(peer->p_remote, preshared_key);
-	}
-	if (nvlist_exists_number(nvl, "persistent-keepalive-interval")) {
-		uint64_t pki = nvlist_get_number(nvl, "persistent-keepalive-interval");
-		awg_u16_range_t pki_range;
-		if (pki > UINT32_MAX) {
-			err = EINVAL;
-			goto out;
-		}
-		/* Legacy FreeBSD tools send an exact u16; AWG3 tools send packed min/max. */
-		if (pki != 0 && pki <= UINT16_MAX)
-			pki_range = (awg_u16_range_t)((uint32_t)pki | ((uint32_t)pki << 16));
-		else
-			pki_range = (awg_u16_range_t)pki;
-		if (pki_range != 0 && awg_u16_range_hi(pki_range) < awg_u16_range_lo(pki_range)) {
-			err = EINVAL;
-			goto out;
-		}
-		wg_timers_set_persistent_keepalive(peer, pki_range);
-	}
 	if (nvlist_exists_nvlist_array(nvl, "allowed-ips")) {
 		const void *addr;
 		uint64_t cidr;
@@ -3579,6 +3545,41 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 			if (err != 0)
 				goto out;
 		}
+	}
+	/* Apply non-failing peer attributes only after AllowedIPs succeed. */
+	if (nvlist_exists_binary(nvl, "endpoint")) {
+		endpoint = nvlist_get_binary(nvl, "endpoint", &size);
+		if (size > sizeof(peer->p_endpoint.e_remote)) {
+			err = EINVAL;
+			goto out;
+		}
+		memcpy(&peer->p_endpoint.e_remote, endpoint, size);
+	}
+	if (nvlist_exists_binary(nvl, "preshared-key")) {
+		preshared_key = nvlist_get_binary(nvl, "preshared-key", &size);
+		if (size != WG_KEY_SIZE) {
+			err = EINVAL;
+			goto out;
+		}
+		noise_remote_set_psk(peer->p_remote, preshared_key);
+	}
+	if (nvlist_exists_number(nvl, "persistent-keepalive-interval")) {
+		uint64_t pki = nvlist_get_number(nvl, "persistent-keepalive-interval");
+		awg_u16_range_t pki_range;
+		if (pki > UINT32_MAX) {
+			err = EINVAL;
+			goto out;
+		}
+		/* Legacy FreeBSD tools send an exact u16; AWG3 tools send packed min/max. */
+		if (pki != 0 && pki <= UINT16_MAX)
+			pki_range = (awg_u16_range_t)((uint32_t)pki | ((uint32_t)pki << 16));
+		else
+			pki_range = (awg_u16_range_t)pki;
+		if (pki_range != 0 && awg_u16_range_hi(pki_range) < awg_u16_range_lo(pki_range)) {
+			err = EINVAL;
+			goto out;
+		}
+		wg_timers_set_persistent_keepalive(peer, pki_range);
 	}
 	if (remote != NULL)
 		noise_remote_put(remote);
