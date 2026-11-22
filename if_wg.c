@@ -3508,11 +3508,11 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 
 			ipaf = AF_UNSPEC;
 			ipflags = 0;
-			if (nvlist_exists_number(aipl[idx], "flags"))
-				ipflags = nvlist_get_number(aipl[idx], "flags");
-			if ((ipflags & ~WGALLOWEDIP_VALID_FLAGS) != 0) {
-				err = EOPNOTSUPP;
-				goto out;
+			if (nvlist_exists_number(aipl[idx], "flags")) {
+				uint64_t flags = nvlist_get_number(aipl[idx], "flags");
+				/* Preflight validated all bits before any peer changes. */
+				MPASS((flags & ~(uint64_t)WGALLOWEDIP_VALID_FLAGS) == 0);
+				ipflags = (int)flags;
 			}
 			cidr = nvlist_get_number(aipl[idx], "cidr");
 			if (nvlist_exists_binary(aipl[idx], "ipv4")) {
@@ -3549,10 +3549,7 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 	/* Apply non-failing peer attributes only after AllowedIPs succeed. */
 	if (nvlist_exists_binary(nvl, "endpoint")) {
 		endpoint = nvlist_get_binary(nvl, "endpoint", &size);
-		if (size > sizeof(peer->p_endpoint.e_remote)) {
-			err = EINVAL;
-			goto out;
-		}
+		MPASS(size <= sizeof(peer->p_endpoint.e_remote));
 		/*
 		 * Readers of p_endpoint use p_endpoint_lock.  Do not write
 		 * directly into the shared endpoint while packets are active.
@@ -3565,28 +3562,20 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 	}
 	if (nvlist_exists_binary(nvl, "preshared-key")) {
 		preshared_key = nvlist_get_binary(nvl, "preshared-key", &size);
-		if (size != WG_KEY_SIZE) {
-			err = EINVAL;
-			goto out;
-		}
+		MPASS(size == WG_KEY_SIZE);
 		noise_remote_set_psk(peer->p_remote, preshared_key);
 	}
 	if (nvlist_exists_number(nvl, "persistent-keepalive-interval")) {
 		uint64_t pki = nvlist_get_number(nvl, "persistent-keepalive-interval");
 		awg_u16_range_t pki_range;
-		if (pki > UINT32_MAX) {
-			err = EINVAL;
-			goto out;
-		}
+		MPASS(pki <= UINT32_MAX);
 		/* Legacy FreeBSD tools send an exact u16; AWG3 tools send packed min/max. */
 		if (pki != 0 && pki <= UINT16_MAX)
 			pki_range = (awg_u16_range_t)((uint32_t)pki | ((uint32_t)pki << 16));
 		else
 			pki_range = (awg_u16_range_t)pki;
-		if (pki_range != 0 && awg_u16_range_hi(pki_range) < awg_u16_range_lo(pki_range)) {
-			err = EINVAL;
-			goto out;
-		}
+		MPASS(pki_range == 0 ||
+		    awg_u16_range_hi(pki_range) >= awg_u16_range_lo(pki_range));
 		wg_timers_set_persistent_keepalive(peer, pki_range);
 	}
 	if (remote != NULL)
