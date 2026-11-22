@@ -4261,10 +4261,8 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 
 	if (nvlist_exists_binary(nvl, "private-key")) {
 		const void *key = nvlist_get_binary(nvl, "private-key", &size);
-		if (size != WG_KEY_SIZE) {
-			err = EINVAL;
-			goto out_locked;
-		}
+		/* Length was checked during preflight, before any live changes. */
+		MPASS(size == WG_KEY_SIZE);
 
 		if (noise_local_keys(sc->sc_local, NULL, private) != 0 ||
 			timingsafe_bcmp(private, key, WG_KEY_SIZE) != 0) {
@@ -4295,10 +4293,8 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 	}
 	if (nvlist_exists_number(nvl, "user-cookie")) {
 		uint64_t user_cookie = nvlist_get_number(nvl, "user-cookie");
-		if (user_cookie > UINT32_MAX) {
-			err = EINVAL;
-			goto out_locked;
-		}
+		/* Range was checked during preflight, before any live changes. */
+		MPASS(user_cookie <= UINT32_MAX);
 		err = wg_socket_set_cookie(sc, user_cookie);
 		if (err)
 			goto out_locked;
