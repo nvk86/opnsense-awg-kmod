@@ -3350,7 +3350,6 @@ wg_peer_validate(struct wg_softc *sc, const nvlist_t *nvl)
 	size_t size, allowedip_count;
 	uint64_t pki, cidr;
 	awg_u16_range_t pki_range;
-	int ipflags;
 
 	sx_assert(&sc->sc_lock, SX_XLOCKED);
 
@@ -3399,12 +3398,10 @@ wg_peer_validate(struct wg_softc *sc, const nvlist_t *nvl)
 		if (!nvlist_exists_number(aipl[idx], "cidr"))
 			continue;
 
-		ipflags = 0;
 		if (nvlist_exists_number(aipl[idx], "flags")) {
 			uint64_t flags = nvlist_get_number(aipl[idx], "flags");
 			if ((flags & ~(uint64_t)WGALLOWEDIP_VALID_FLAGS) != 0)
 				return (EOPNOTSUPP);
-			ipflags = (int)flags;
 		}
 
 		cidr = nvlist_get_number(aipl[idx], "cidr");
