@@ -986,13 +986,32 @@ static int wg_socket_set_sockopt(struct socket *so4, struct socket *so6, int nam
 static int wg_socket_set_cookie(struct wg_softc *sc, uint32_t user_cookie)
 {
 	struct wg_socket *so = &sc->sc_socket;
-	int ret;
+	uint32_t old_cookie;
+	int ret, rollback;
 
 	sx_assert(&sc->sc_lock, SX_XLOCKED);
-	ret = wg_socket_set_sockopt(so->so_so4, so->so_so6, SO_USER_COOKIE, &user_cookie, sizeof(user_cookie));
-	if (!ret)
-		so->so_user_cookie = user_cookie;
-	return (ret);
+
+	old_cookie = so->so_user_cookie;
+	if (old_cookie == user_cookie)
+		return (0);
+
+	/*
+	 * sosetopt() is performed on IPv4 before IPv6.  If the IPv6
+	 * update fails, the IPv4 socket may already have the new value.
+	 * Restore both sockets to the last committed value on failure.
+	 */
+	ret = wg_socket_set_sockopt(so->so_so4, so->so_so6,
+	    SO_USER_COOKIE, &user_cookie, sizeof(user_cookie));
+	if (ret != 0) {
+		rollback = wg_socket_set_sockopt(so->so_so4, so->so_so6,
+		    SO_USER_COOKIE, &old_cookie, sizeof(old_cookie));
+		if (rollback != 0)
+			return (EIO);
+		return (ret);
+	}
+
+	so->so_user_cookie = user_cookie;
+	return (0);
 }
 
 static int wg_socket_set_fibnum(struct wg_softc *sc, int fibnum)
