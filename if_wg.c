@@ -3400,18 +3400,26 @@ wg_peer_validate(struct wg_softc *sc, const nvlist_t *nvl)
 			continue;
 
 		ipflags = 0;
-		if (nvlist_exists_number(aipl[idx], "flags"))
-			ipflags = nvlist_get_number(aipl[idx], "flags");
-		if ((ipflags & ~WGALLOWEDIP_VALID_FLAGS) != 0)
-			return (EOPNOTSUPP);
+		if (nvlist_exists_number(aipl[idx], "flags")) {
+			uint64_t flags = nvlist_get_number(aipl[idx], "flags");
+			if ((flags & ~(uint64_t)WGALLOWEDIP_VALID_FLAGS) != 0)
+				return (EOPNOTSUPP);
+			ipflags = (int)flags;
+		}
 
 		cidr = nvlist_get_number(aipl[idx], "cidr");
 		if (nvlist_exists_binary(aipl[idx], "ipv4")) {
+#ifndef INET
+			return (EAFNOSUPPORT);
+#endif
 			addr = nvlist_get_binary(aipl[idx], "ipv4", &size);
 			if (addr == NULL || cidr > 32 ||
 			    size != sizeof(struct in_addr))
 				return (EINVAL);
 		} else if (nvlist_exists_binary(aipl[idx], "ipv6")) {
+#ifndef INET6
+			return (EAFNOSUPPORT);
+#endif
 			addr = nvlist_get_binary(aipl[idx], "ipv6", &size);
 			if (addr == NULL || cidr > 128 ||
 			    size != sizeof(struct in6_addr))
