@@ -31,6 +31,15 @@ Internal `wg_*` source symbols are retained where they are implementation detail
 
 The FreeBSD userspace ABI uses nvlist fields and is paired with the `opnsense-awg-tools` repository.
 
+## Compatibility and limitations
+
+- The FreeBSD port intentionally permits H1-H4 values 1-4, provided the configured header ranges remain unambiguous. This differs from upstream validation policy.
+- An all-zero `HeaderProtectionKey` **disables** header protection in this FreeBSD implementation. The Linux AWG 3.1 implementation treats a configured all-zero 32-byte key as an **enabled** key; do not use an all-zero HP key for cross-platform interoperability.
+- This build does not define `AWG2_CLIENT_COMPAT`; legacy AWG2 compatibility is not guaranteed.
+- `SIOCSWG` performs extensive preflight validation, but runtime failures during the commit phase can still leave a partially applied configuration. Do not assume full transactional atomicity of a multi-field update.
+- Kernel-module unload and callback teardown require validation against the exact FreeBSD kernel version and execution environment. Successful traffic tests alone do not prove all unload races safe.
+
+
 ## Target
 
 The current source tracks AmneziaWG protocol version `3.1.20260906` and targets FreeBSD 15.x / OPNsense 27.x.
