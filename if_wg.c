@@ -3553,7 +3553,15 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 			err = EINVAL;
 			goto out;
 		}
+		/*
+		 * Readers of p_endpoint use p_endpoint_lock.  Do not write
+		 * directly into the shared endpoint while packets are active.
+		 */
+		rw_wlock(&peer->p_endpoint_lock);
+		memset(&peer->p_endpoint.e_remote, 0,
+		    sizeof(peer->p_endpoint.e_remote));
 		memcpy(&peer->p_endpoint.e_remote, endpoint, size);
+		rw_wunlock(&peer->p_endpoint_lock);
 	}
 	if (nvlist_exists_binary(nvl, "preshared-key")) {
 		preshared_key = nvlist_get_binary(nvl, "preshared-key", &size);
