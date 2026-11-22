@@ -4215,6 +4215,21 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 		}
 	}
 
+	/*
+	 * Cookie setup may fail. Perform it before destructive peer or
+	 * AWG configuration changes so a cookie error preserves those fields.
+	 * This is not a full ioctl transaction: socket changes above and
+	 * later peer allocation failures still require separate handling.
+	 */
+	if (nvlist_exists_number(nvl, "user-cookie")) {
+		uint64_t user_cookie = nvlist_get_number(nvl, "user-cookie");
+		/* Range was checked during preflight, before any live changes. */
+		MPASS(user_cookie <= UINT32_MAX);
+		err = wg_socket_set_cookie(sc, user_cookie);
+		if (err)
+			goto out_locked;
+	}
+
 	if (nvlist_exists_bool(nvl, "replace-peers") &&
 	    nvlist_get_bool(nvl, "replace-peers"))
 		wg_peer_destroy_all(sc);
@@ -4295,14 +4310,6 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 			else
 				cookie_checker_update(&sc->sc_cookie, NULL);
 		}
-	}
-	if (nvlist_exists_number(nvl, "user-cookie")) {
-		uint64_t user_cookie = nvlist_get_number(nvl, "user-cookie");
-		/* Range was checked during preflight, before any live changes. */
-		MPASS(user_cookie <= UINT32_MAX);
-		err = wg_socket_set_cookie(sc, user_cookie);
-		if (err)
-			goto out_locked;
 	}
 	if (nvlist_exists_nvlist_array(nvl, "peers")) {
 		size_t peercount;
