@@ -369,6 +369,7 @@ struct wg_softc {
 	u_int			 sc_decrypt_last_cpu;
 
 	struct sx		 sc_lock;
+	struct mtx		 sc_awg_rx_mtx; /* spin: RX config snapshot */
 	struct mtx		 sc_peer_cleanup_mtx;
 	struct cv		 sc_peer_cleanup_cv;
 	u_int			 sc_peer_cleanup_pending;
@@ -2617,7 +2618,7 @@ wg_queue_dequeue_parallel(struct wg_queue *parallel)
 static uint32_t
 wg_match_pkt_skipping_junk(
 	struct mbuf **mptr,
-	struct wg_softc *sc,
+	bool random_trailers,
 	size_t 		junk_size,
 	uint32_t	expected,
 	wg_hdr_pair hdr,
@@ -2632,7 +2633,7 @@ wg_match_pkt_skipping_junk(
 
 	if (header_size) {
 		size_t expected_size = header_size + junk_size;
-		if (sc->sc_amnezia.am_random_trailers) {
+		if (random_trailers) {
 			if ((*mptr)->m_pkthdr.len < expected_size)
 				return 0;
 		} else if ((*mptr)->m_pkthdr.len != expected_size) {
@@ -2670,7 +2671,7 @@ wg_match_pkt_skipping_junk(
 
 	/* RandomTrailers permits extra bytes only on handshake/cookie messages.
 	 * Match Linux by trimming them before MAC/noise parsing and HP decrypt. */
-	if (header_size && sc->sc_amnezia.am_random_trailers) {
+	if (header_size && random_trailers) {
 		size_t expected_size = header_size + junk_size;
 		if ((*mptr)->m_pkthdr.len > expected_size)
 			m_adj(*mptr, -((int)((*mptr)->m_pkthdr.len - expected_size)));
@@ -2708,16 +2709,25 @@ wg_match_input_skipping_junk(struct mbuf **mptr, struct wg_softc *sc)
 {
 	uint32_t matched = 0;
 	struct awg_hp_snapshot hp;
+	uint32_t s[AWG_Sx];
+	wg_hdr_pair h[AWG_Hx];
+	bool random_trailers;
 
+	/* UDP callback must not acquire the sleepable sc_lock. */
+	mtx_lock_spin(&sc->sc_awg_rx_mtx);
+	memcpy(s, sc->sc_amnezia.am_s, sizeof(s));
+	memcpy(h, sc->sc_amnezia.am_h, sizeof(h));
+	random_trailers = sc->sc_amnezia.am_random_trailers;
+	mtx_unlock_spin(&sc->sc_awg_rx_mtx);
 	awg_header_protection_snapshot(&sc->sc_amnezia.am_header_protection, &hp);
 
 	for (size_t i = 0; *mptr && !matched && i < AWG_Hx; i++) {
 		matched = wg_match_pkt_skipping_junk(
 			mptr,
-			sc,
-			sc->sc_amnezia.am_s[i],
+			random_trailers,
+			s[i],
 			amnezia_structureres[i].ams_type,
-			sc->sc_amnezia.am_h[i],
+			h[i],
 #ifndef AWG2_JUNK_AFTER_HANDSHAKE
 			i != AWG_S4 ? amnezia_structureres[i].ams_sz : 0,
 #else
@@ -4284,6 +4294,8 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 	sc->sc_amnezia.am_junk_packet_min_size = new_jmin;
 	sc->sc_amnezia.am_junk_packet_max_size = new_jmax;
 
+	/* Publish RX parsing parameters as one coherent snapshot. */
+	mtx_lock_spin(&sc->sc_awg_rx_mtx);
 	// assign Sx parameters
 	for (int i = 0; i < AWG_Sx; i++) {
 		sc->sc_amnezia.am_s[i] = sx[i];
@@ -4294,6 +4306,8 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 		if (hparams[i].changed)
 			sc->sc_amnezia.am_h[i] = hparams[i].value;
 	}
+
+	mtx_unlock_spin(&sc->sc_awg_rx_mtx);
 
 	for (int i = 0; i < AWG_Ix; i++) {
 		if (!changed_ix[i])
@@ -4308,10 +4322,12 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 		if (awg3_ranges[i].changed)
 			*awg3_ranges[i].dst = awg3_ranges[i].value;
 	}
+	mtx_lock_spin(&sc->sc_awg_rx_mtx);
 	for (size_t i = 0; i < nitems(awg3_bools); i++) {
 		if (awg3_bools[i].changed)
 			*awg3_bools[i].dst = awg3_bools[i].value;
 	}
+	mtx_unlock_spin(&sc->sc_awg_rx_mtx);
 
 	if (validated_hp_key != NULL) {
 	        awg_header_protection_set_key(
@@ -4775,6 +4791,7 @@ wg_clone_create(struct if_clone *ifc, char *name, size_t len,
 	wg_queue_init(&sc->sc_decrypt_parallel, "decp");
 
 	sx_init(&sc->sc_lock, "awg softc lock");
+	mtx_init(&sc->sc_awg_rx_mtx, "awg rx config", NULL, MTX_SPIN);
 	mtx_init(&sc->sc_peer_cleanup_mtx, "awg peer cleanup", NULL, MTX_DEF);
 	cv_init(&sc->sc_peer_cleanup_cv, "awg peer cleanup");
 
@@ -4899,6 +4916,7 @@ wg_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags)
 		taskqgroup_detach(qgroup_wg_tqg, &sc->sc_encrypt[i]);
 		taskqgroup_detach(qgroup_wg_tqg, &sc->sc_decrypt[i]);
 	}
+	mtx_destroy(&sc->sc_awg_rx_mtx);
 	sx_destroy(&sc->sc_lock);
 	cv_destroy(&sc->sc_peer_cleanup_cv);
 	mtx_destroy(&sc->sc_peer_cleanup_mtx);
