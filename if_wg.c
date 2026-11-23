@@ -2083,6 +2083,10 @@ wg_encrypt(struct wg_softc *sc, struct wg_packet *pkt)
 	struct mbuf		*m;
 	uint32_t		 idx;
 	unsigned int		 padlen;
+	uint32_t junk_size;
+	wg_hdr_pair hdr;
+	awg_u16_range_t cpa;
+	bool random_trailers;
 	enum wg_ring_state	 state = WG_PACKET_DEAD;
 
 	remote = noise_keypair_remote(pkt->p_keypair);
@@ -2090,20 +2094,28 @@ wg_encrypt(struct wg_softc *sc, struct wg_packet *pkt)
 	m = pkt->p_mbuf;
 	pkt->p_has_data = (m->m_pkthdr.len != 0);
 
+	/* Keep all per-packet AWG parameters from one configuration snapshot. */
+	mtx_lock_spin(&sc->sc_awg_rx_mtx);
+	junk_size = sc->sc_amnezia.am_s[AWG_S4];
+	hdr = sc->sc_amnezia.am_h[AWG_H4];
+	cpa = sc->sc_amnezia.am_content_padding_addition;
+	random_trailers = sc->sc_amnezia.am_random_trailers;
+	mtx_unlock_spin(&sc->sc_awg_rx_mtx);
+
 	/* Linux AWG3 tracks the largest required UDP payload before choosing
 	 * ContentPaddingAddition or RandomTrailers. CPA has precedence. */
 	uint32_t packet_len = m->m_pkthdr.len + sizeof(struct wg_pkt_data) +
-		NOISE_AUTHTAG_LEN + sc->sc_amnezia.am_s[AWG_S4];
+		NOISE_AUTHTAG_LEN + junk_size;
 	uint32_t window = atomic_load_32(&peer->p_udp_window);
 	if (window < packet_len) {
 		atomic_store_32(&peer->p_udp_window, packet_len);
 		window = packet_len;
 	}
 
-	if (!awg_u16_range_is_zero(sc->sc_amnezia.am_content_padding_addition)) {
-		uint16_t add = awg_u16_range_pick(sc->sc_amnezia.am_content_padding_addition);
+	if (!awg_u16_range_is_zero(cpa)) {
+		uint16_t add = awg_u16_range_pick(cpa);
 		padlen = (window > packet_len) ? min((uint32_t)add, window - packet_len) : 0;
-	} else if (sc->sc_amnezia.am_random_trailers) {
+	} else if (random_trailers) {
 		padlen = (window > packet_len) ? arc4random_uniform(window - packet_len) : 0;
 	} else {
 		padlen = calculate_padding(pkt);
@@ -2128,12 +2140,11 @@ wg_encrypt(struct wg_softc *sc, struct wg_packet *pkt)
 	if (m == NULL)
 		goto out;
 	data = mtod(m, struct wg_pkt_data *);
-	data->t = WG_PKT_HDR_GENERATE(sc, DATA);
+	data->t = wg_pkt_type_gen(WG_PKT_DATA, hdr);
 	data->r_idx = idx;
 	data->nonce = htole64(pkt->p_nonce);
 
 	/* Add junk data if S4 is configured (before header) */
-	size_t junk_size = sc->sc_amnezia.am_s[AWG_S4];
 	if (junk_size > 0) {
 		M_PREPEND(m, junk_size, M_NOWAIT);
 		if (m == NULL)
