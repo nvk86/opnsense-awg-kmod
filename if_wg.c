@@ -670,11 +670,9 @@ static void
 wg_peer_set_endpoint(struct wg_peer *peer, struct wg_endpoint *e)
 {
 	MPASS(e->e_remote.r_sa.sa_family != 0);
-	if (memcmp(e, &peer->p_endpoint, sizeof(*e)) == 0)
-		return;
-
 	rw_wlock(&peer->p_endpoint_lock);
-	peer->p_endpoint = *e;
+	if (memcmp(e, &peer->p_endpoint, sizeof(*e)) != 0)
+		peer->p_endpoint = *e;
 	rw_wunlock(&peer->p_endpoint_lock);
 }
 
@@ -2943,7 +2941,9 @@ wg_xmit(if_t ifp, struct mbuf *m, sa_family_t af, uint32_t mtu)
 		goto err_peer;
 	}
 
+	rw_rlock(&peer->p_endpoint_lock);
 	peer_af = peer->p_endpoint.e_remote.r_sa.sa_family;
+	rw_runlock(&peer->p_endpoint_lock);
 	if (__predict_false(peer_af != AF_INET && peer_af != AF_INET6)) {
 		DPRINTF(sc, "No valid endpoint has been configured or "
 				"discovered for peer %" PRIu64 "\n", peer->p_id);
@@ -4464,10 +4464,13 @@ wgc_get(struct wg_softc *sc, struct wg_data_io *wgd)
 			if (wgc_privileged(sc))
 				nvlist_add_binary(nvl_peer, "preshared-key", preshared_key, sizeof(preshared_key));
 			explicit_bzero(preshared_key, sizeof(preshared_key));
-			if (peer->p_endpoint.e_remote.r_sa.sa_family == AF_INET)
-				nvlist_add_binary(nvl_peer, "endpoint", &peer->p_endpoint.e_remote, sizeof(struct sockaddr_in));
-			else if (peer->p_endpoint.e_remote.r_sa.sa_family == AF_INET6)
-				nvlist_add_binary(nvl_peer, "endpoint", &peer->p_endpoint.e_remote, sizeof(struct sockaddr_in6));
+			/* Snapshot endpoint before serialization: UDP RX may update it. */
+			struct wg_endpoint endpoint_snapshot;
+			wg_peer_get_endpoint(peer, &endpoint_snapshot);
+			if (endpoint_snapshot.e_remote.r_sa.sa_family == AF_INET)
+				nvlist_add_binary(nvl_peer, "endpoint", &endpoint_snapshot.e_remote, sizeof(struct sockaddr_in));
+			else if (endpoint_snapshot.e_remote.r_sa.sa_family == AF_INET6)
+				nvlist_add_binary(nvl_peer, "endpoint", &endpoint_snapshot.e_remote, sizeof(struct sockaddr_in6));
 			wg_timers_get_last_handshake(peer, &ts64);
 			nvlist_add_binary(nvl_peer, "last-handshake-time", &ts64, sizeof(ts64));
 			nvlist_add_number(nvl_peer, "persistent-keepalive-interval", peer->p_persistent_keepalive_interval);
