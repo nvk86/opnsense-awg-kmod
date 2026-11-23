@@ -2151,7 +2151,7 @@ wg_encrypt(struct wg_softc *sc, struct wg_packet *pkt)
 			goto out;
 
 		if (junk_size > M_SIZE(m)) {
-			DPRINTF(sc, "s4 junk size is greater than remaining mbuf size (%zu > %u)\n", junk_size, M_SIZE(m));
+			DPRINTF(sc, "s4 junk size is greater than remaining mbuf size (%u > %u)\n", junk_size, M_SIZE(m));
 			goto out;
 		}
 
