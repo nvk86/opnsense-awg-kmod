@@ -1747,6 +1747,17 @@ wg_awg_refresh_after_time(struct wg_softc *sc)
 	return (reject > subtract ? (uint16_t)(reject - subtract) : 1);
 }
 
+static void
+wg_awg_tx_header_snapshot(struct wg_softc *sc, unsigned int index,
+    uint32_t *junk_size, wg_hdr_pair *hdr)
+{
+	MPASS(index < AWG_Sx && index < AWG_Hx);
+	mtx_lock_spin(&sc->sc_awg_rx_mtx);
+	*junk_size = sc->sc_amnezia.am_s[index];
+	*hdr = sc->sc_amnezia.am_h[index];
+	mtx_unlock_spin(&sc->sc_awg_rx_mtx);
+}
+
 static uint32_t
 wg_pkt_type_gen(uint32_t pkt_type, wg_hdr_pair hdr)
 {
@@ -1764,6 +1775,8 @@ wg_send_initiation(struct wg_peer *peer)
 {
 	struct wg_pkt_initiation pkt;
 	struct wg_softc *sc = peer->p_sc;
+	uint32_t junk_size;
+	wg_hdr_pair hdr;
 
 	/* Send junk packets before handshake */
 	wg_send_junk_packets(peer);
@@ -1777,11 +1790,12 @@ wg_send_initiation(struct wg_peer *peer)
 
 	DPRINTF(sc, "Sending handshake initiation to peer %" PRIu64 "\n", peer->p_id);
 
-	pkt.t = WG_PKT_HDR_GENERATE(sc, INITIATION);
+	wg_awg_tx_header_snapshot(sc, AWG_S1, &junk_size, &hdr);
+	pkt.t = wg_pkt_type_gen(WG_PKT_INITIATION, hdr);
 	cookie_maker_mac(&peer->p_cookie, &pkt.m, &pkt,
 		sizeof(pkt) - sizeof(pkt.m));
 	wg_peer_send_buf_junk(peer, (uint8_t *)&pkt, sizeof(pkt),
-		sc->sc_amnezia.am_s[AWG_S1]);
+		junk_size);
 	wg_timers_event_handshake_initiated(peer);
 }
 
@@ -1789,6 +1803,8 @@ static void
 wg_send_response(struct wg_peer *peer)
 {
 	struct wg_pkt_response pkt;
+	uint32_t junk_size;
+	wg_hdr_pair hdr;
 
 	if (noise_create_response(peer->p_remote, &pkt.s_idx, &pkt.r_idx,
 		pkt.ue, pkt.en) != 0)
@@ -1797,11 +1813,12 @@ wg_send_response(struct wg_peer *peer)
 	DPRINTF(peer->p_sc, "Sending handshake response to peer %" PRIu64 "\n", peer->p_id);
 
 	wg_timers_event_session_derived(peer);
-	pkt.t = WG_PKT_HDR_GENERATE(peer->p_sc, RESPONSE);
+	wg_awg_tx_header_snapshot(peer->p_sc, AWG_S2, &junk_size, &hdr);
+	pkt.t = wg_pkt_type_gen(WG_PKT_RESPONSE, hdr);
 	cookie_maker_mac(&peer->p_cookie, &pkt.m, &pkt,
 		 sizeof(pkt)-sizeof(pkt.m));
 	wg_peer_send_buf_junk(peer, (uint8_t*)&pkt, sizeof(pkt),
-		peer->p_sc->sc_amnezia.am_s[AWG_S2]);
+		junk_size);
 }
 
 static void
@@ -1809,17 +1826,20 @@ wg_send_cookie(struct wg_softc *sc, struct cookie_macs *cm, uint32_t idx,
 	struct wg_endpoint *e)
 {
 	struct wg_pkt_cookie	pkt;
+	uint32_t junk_size;
+	wg_hdr_pair hdr;
 
 	DPRINTF(sc, "Sending cookie response for denied handshake message\n");
 
-	pkt.t = WG_PKT_HDR_GENERATE(sc, COOKIE);
+	wg_awg_tx_header_snapshot(sc, AWG_S3, &junk_size, &hdr);
+	pkt.t = wg_pkt_type_gen(WG_PKT_COOKIE, hdr);
 	pkt.r_idx = idx;
 
 	cookie_checker_create_payload(&sc->sc_cookie, cm, pkt.nonce,
 		pkt.ec, &e->e_remote.r_sa);
 
 	wg_send_buf_junk(sc, e, (uint8_t *)&pkt, sizeof(pkt),
-		sc->sc_amnezia.am_s[AWG_S3]);
+		junk_size);
 }
 
 static void
