@@ -4307,6 +4307,11 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 			sc->sc_amnezia.am_h[i] = hparams[i].value;
 	}
 
+	/* RandomTrailers belongs to the same RX configuration generation. */
+	for (size_t i = 0; i < nitems(awg3_bools); i++) {
+		if (awg3_bools[i].changed)
+			*awg3_bools[i].dst = awg3_bools[i].value;
+	}
 	mtx_unlock_spin(&sc->sc_awg_rx_mtx);
 
 	for (int i = 0; i < AWG_Ix; i++) {
@@ -4322,13 +4327,6 @@ wgc_set(struct wg_softc *sc, struct wg_data_io *wgd)
 		if (awg3_ranges[i].changed)
 			*awg3_ranges[i].dst = awg3_ranges[i].value;
 	}
-	mtx_lock_spin(&sc->sc_awg_rx_mtx);
-	for (size_t i = 0; i < nitems(awg3_bools); i++) {
-		if (awg3_bools[i].changed)
-			*awg3_bools[i].dst = awg3_bools[i].value;
-	}
-	mtx_unlock_spin(&sc->sc_awg_rx_mtx);
-
 	if (validated_hp_key != NULL) {
 	        awg_header_protection_set_key(
 	            &sc->sc_amnezia.am_header_protection,
