@@ -1663,44 +1663,67 @@ static void
 wg_send_junk_packets(struct wg_peer *peer)
 {
 	struct wg_softc *sc = peer->p_sc;
+	uint8_t buf[ETHERMTU];
+	char *desc_copy;
+	uint32_t count, min_size, max_size;
+	bool has_ix = false;
 
-	bool send_junk = sc->sc_amnezia.am_junk_packet_count > 0;
-	for (int i = 0; !send_junk && i < AWG_Ix; i++) {
-		send_junk = (sc->sc_amnezia.am_i[i] != NULL);
+	/*
+	 * wgc_set() replaces and frees Ix descriptions under sc_lock.
+	 * Never retain a pointer to a live description after unlocking.
+	 * Do not hold sc_lock while constructing or sending packets.
+	 */
+	sx_slock(&sc->sc_lock);
+	count = sc->sc_amnezia.am_junk_packet_count;
+	min_size = sc->sc_amnezia.am_junk_packet_min_size;
+	max_size = sc->sc_amnezia.am_junk_packet_max_size;
+	for (int i = 0; i < AWG_Ix; i++) {
+		if (sc->sc_amnezia.am_i[i] != NULL) {
+			has_ix = true;
+			break;
+		}
 	}
+	sx_sunlock(&sc->sc_lock);
 
-	if (send_junk) {
-		uint8_t buf[ETHERMTU];
+	if (count == 0 && !has_ix)
+		return;
 
+	/* Each validated Ix string is shorter than 2 * ETHERMTU. */
+	desc_copy = has_ix ? malloc(2 * ETHERMTU, M_WG, M_NOWAIT) : NULL;
+	if (desc_copy != NULL) {
 		for (int i = 0; i < AWG_Ix; i++) {
-			char *desc = sc->sc_amnezia.am_i[i];
+			bool present = false;
+			size_t size;
 
-			if (desc) {
-				size_t size;
-
-				if (wg_prepare_ix_packet(sc, i, desc, &size, buf) == 0) {
-					KASSERT(size <= sizeof(buf),
-                                            ("wrote too much data into junk packet buffer"));
-					wg_peer_send_buf(peer, buf, size);
+			sx_slock(&sc->sc_lock);
+			const char *desc = sc->sc_amnezia.am_i[i];
+			if (desc != NULL) {
+				size_t len = strnlen(desc, 2 * ETHERMTU);
+				if (len < 2 * ETHERMTU) {
+					memcpy(desc_copy, desc, len + 1);
+					present = true;
 				}
 			}
+			sx_sunlock(&sc->sc_lock);
+
+			if (present &&
+			    wg_prepare_ix_packet(sc, i, desc_copy, &size, buf) == 0) {
+				KASSERT(size <= sizeof(buf),
+				    ("wrote too much data into junk packet buffer"));
+				wg_peer_send_buf(peer, buf, size);
+			}
 		}
+		free(desc_copy, M_WG);
+	}
 
-		for (int i = 0; i < sc->sc_amnezia.am_junk_packet_count; i++) {
-			/* Generate random size between min and max */
-			size_t size = arc4random_uniform(sc->sc_amnezia.am_junk_packet_max_size -
-				sc->sc_amnezia.am_junk_packet_min_size + 1) +
-				sc->sc_amnezia.am_junk_packet_min_size;
-
-			/* Fill with random data */
-			arc4random_buf(buf, size);
-
-			/* Send to peer's endpoint */
-			wg_peer_send_buf(peer, buf, size);
-		}
+	/* Use one consistent snapshot of the validated junk size range. */
+	for (uint32_t i = 0; i < count; i++) {
+		size_t size = arc4random_uniform(max_size - min_size + 1) +
+		    min_size;
+		arc4random_buf(buf, size);
+		wg_peer_send_buf(peer, buf, size);
 	}
 }
-
 
 static uint16_t
 wg_awg_timeout(struct wg_softc *sc, awg_u16_range_t range, uint16_t fallback)
